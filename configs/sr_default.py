@@ -3,10 +3,26 @@ from copy import deepcopy
 expname = None                    # experiment name
 basedir = './logs/'               # where to store ckpts and logs
 
+'''
+Image backbone edsr configs
+'''
+
+edsr_model = dict(
+    name='baseline',
+    n_resblocks=16, 
+    n_feats=64, 
+    res_scale=1,
+    scale=2, 
+    no_upsampling=True, 
+    rgb_range=1
+)
+
+
 ''' Template of data options
 '''
 data = dict(
-    task='',
+    task='sr', 
+    down=4,
     datadir=None,                 # path to dataset root folder
     dataset_type=None,            # blender | nsvf | blendedmvs | tankstemple | deepvoxels | co3d
     inverse_y=False,              # intrinsict mode (to support blendedmvs, nsvf, tankstemple)
@@ -37,7 +53,9 @@ coarse_train = dict(
     N_rand=8192,                  # batch size (number of random rays per optimization step)
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
-    lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
+    lrate_net=1e-3,               # lr of the mlp to preduct view-dependent color
+    lrate_encoder=1e-4, 
+    normalize_lr=False,
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
     pervoxel_lr=True,             # view-count-based lr
     pervoxel_lr_downrate=1,       # downsampled image for computing view-count-based lr
@@ -62,13 +80,14 @@ fine_train.update(dict(
     ray_sampler='in_maskcache',
     weight_entropy_last=0.001,
     weight_rgbper=0.01,
-    pg_scale=[1000, 2000, 3000, 4000],
     skip_zero_grad_fields=['density', 'k0'],
 ))
 
 ''' Template of model and rendering options
 '''
 coarse_model_and_render = dict(
+    
+    pretrained_state_dict=None,
     num_voxels=1024000,           # expected number of voxel
     num_voxels_base=1024000,      # to rescale delta distance
     mpi_depth=128,                # the number of planes in Multiplane Image (work when ndc=True)
@@ -77,29 +96,29 @@ coarse_model_and_render = dict(
     in_act_density=False,         # in-activated trilinear interpolation
     bbox_thres=1e-3,              # threshold to determine known free-space in the fine stage
     mask_cache_thres=1e-3,        # threshold to determine a tighten BBox in the fine stage
-    rgbnet_dim=0,                 # feature voxel grid dim
-    rgbnet_full_implicit=False,   # let the colors MLP ignore feature voxel grid
+    net_dim=0,                    # feature voxel grid dim
     implicit_voxel_feat=False,    # False --> dvgo tri-linear interpolation
     feat_unfold=True, 
     cell_decode=True,
     local_ensemble=True,
-    feat_with_fourier_emb=False,  
-    posbase_pe=0,
-    rgbnet_direct=True,           # set to False to treat the first 3 dim of feature voxel grid as diffuse rgb
-    rgbnet_depth=3,               # depth of the colors MLP (there are rgbnet_depth-1 intermediate features)
-    rgbnet_width=128,             # width of the colors MLP
+    feat_with_fourier_emb=False,
+    add_posemb=False,
+    net_depth=3,                  # depth of the colors MLP (there are rgbnet_depth-1 intermediate features)
+    net_width=128,                # width of the colors MLP
     alpha_init=1e-6,              # set the alpha values everywhere at the begin of training
     fast_color_thres=1e-7,        # threshold of alpha value to skip the fine stage sampled point
     maskout_near_cam_vox=True,    # maskout grid points that between cameras and their near planes
     world_bound_scale=1,          # rescale the BBox enclosing the scene
     stepsize=0.5,                 # sampling stepsize in volume rendering
+    use_coarse_geo=True,
 )
 
 fine_model_and_render = deepcopy(coarse_model_and_render)
 fine_model_and_render.update(dict(
+    
+    pretrained_state_dict='/data/hydeng/SR_NeRF/DirectVoxGO/pretrained/edsr-baseline.pth',
     num_voxels=160**3,
     num_voxels_base=160**3,
-    rgbnet_dim=12,
     alpha_init=1e-2,
     fast_color_thres=1e-4,
     maskout_near_cam_vox=False,

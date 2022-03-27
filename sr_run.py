@@ -1,5 +1,6 @@
+from operator import mod
 import os, sys, copy, glob, json, time, random, argparse
-from shutil import copyfile
+from shutil import ExecError, copyfile
 from tqdm import tqdm, trange
 
 import mmcv
@@ -10,7 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lib import utils, dvgo, dmpigo, ray_utils
+from torchvision import transforms
+
+from lib import utils, sr_dvgo, dvgo, ray_utils
 from lib.load_data import load_data
 
 
@@ -47,7 +50,7 @@ def config_parser():
     parser.add_argument("--eval_lpips_vgg", action='store_true')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=500,
+    parser.add_argument("--i_print",   type=int, default=10,
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_weights", type=int, default=100000,
                         help='frequency of weight ckpt saving')
@@ -56,7 +59,7 @@ def config_parser():
 
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
-                      gt_imgs=None, savedir=None, render_factor=0,
+                      gt_imgs=None, lr_imgs=None, savedir=None, render_factor=0,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
@@ -75,7 +78,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_alex = []
     lpips_vgg = []
 
-    for i, c2w in enumerate(tqdm(render_poses)):
+    for i, c2w in enumerate(tqdm(render_poses[:5])):
 
         H, W = HW[i]
         K = Ks[i]
@@ -86,22 +89,14 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         rays_o = rays_o.flatten(0,-2)
         rays_d = rays_d.flatten(0,-2)
         viewdirs = viewdirs.flatten(0,-2)
-
-        render_result_chunks = []
-        n_chunks = rays_o.shape[0] // 8192 + 1
-        for chunck in range(n_chunks):
-            ro = rays_o[8192*chunck: 8192*(chunck+1)]
-            rd = rays_d[8192*chunck: 8192*(chunck+1)]
-            vd = viewdirs[8192*chunck: 8192*(chunck+1)]
-            
-        
-            render_result_dict = model(ro, rd, vd, global_step=chunck, **render_kwargs)
-            render_result_chunks.append({k: v for k, v in render_result_dict.items() if k in keys})
-
-        # render_result_chunks = [
-        #     {k: v for k, v in model(ro, rd, vd, **render_kwargs).items() if k in keys}
-        #     for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
-        # ]
+        rgb_lr = lr_imgs[i]
+        rgb_lr = transforms.ToTensor()(rgb_lr).unsqueeze(0).to(rays_o.device)
+        if render_kwargs['normalize']:
+            rgb_lr = (rgb_lr - 0.5) / 0.5
+        render_result_chunks = [
+            {k: v for k, v in model(rgb_lr, ro, rd, vd, **render_kwargs).items() if k in keys}
+            for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
+        ]
         render_result = {
             k: torch.cat([ret[k] for ret in render_result_chunks]).reshape(H,W,-1)
             for k in render_result_chunks[0].keys()
@@ -158,10 +153,16 @@ def load_everything(args, cfg):
     data_dict = load_data(cfg.data)
 
     # remove useless field
-    kept_keys = {
+    if cfg.data.task == 'sr':
+        kept_keys = {
             'hwf', 'HW', 'Ks', 'near', 'far',
             'i_train', 'i_val', 'i_test', 'irregular_shape',
-            'poses', 'render_poses', 'images'}
+            'poses', 'render_poses', 'images', 'images_lr', 'hwf_lr', 'HW_lr', 'Ks_lr'}
+    else:
+        kept_keys = {
+                'hwf', 'HW', 'Ks', 'near', 'far',
+                'i_train', 'i_val', 'i_test', 'irregular_shape',
+                'poses', 'render_poses', 'images'}
     for k in list(data_dict.keys()):
         if k not in kept_keys:
             data_dict.pop(k)
@@ -169,8 +170,10 @@ def load_everything(args, cfg):
     # construct data tensor
     if data_dict['irregular_shape']:
         data_dict['images'] = [torch.FloatTensor(im, device='cpu') for im in data_dict['images']]
+        data_dict['images_lr'] = [torch.FloatTensor(im, device='cpu') for im in data_dict['images_lr']]
     else:
         data_dict['images'] = torch.FloatTensor(data_dict['images'], device='cpu')
+        data_dict['images_lr'] = torch.FloatTensor(data_dict['images_lr'], device='cpu')
     data_dict['poses'] = torch.Tensor(data_dict['poses'])
     return data_dict
 
@@ -220,19 +223,27 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres):
 
 
 def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
-    if stage == 'fine' and not cfg.fine_model_and_render.use_coarse_geo:
-        coarse_ckpt_path = None
+
     # init
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if abs(cfg_model.world_bound_scale - 1) > 1e-9:
         xyz_shift = (xyz_max - xyz_min) * (cfg_model.world_bound_scale - 1) / 2
         xyz_min -= xyz_shift
         xyz_max += xyz_shift
-    HW, Ks, near, far, i_train, i_val, i_test, poses, render_poses, images = [
-        data_dict[k] for k in [
-            'HW', 'Ks', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images'
+    
+    if cfg.data.task == 'sr':
+        HW, HW_lr, Ks, Ks_lr, near, far, i_train, i_val, i_test, poses, render_poses, images, images_lr = [
+            data_dict[k] for k in [
+                'HW', 'HW_lr', 'Ks', 'Ks_lr', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images', 'images_lr'
+            ]
         ]
-    ]
+    else:
+        HW, Ks, near, far, i_train, i_val, i_test, poses, render_poses, images = [
+            data_dict[k] for k in [
+                'HW', 'Ks', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images'
+            ]
+        ]
+
 
     # find whether there is existing checkpoint path
     last_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_last.tar')
@@ -264,13 +275,32 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         else:
             print(f'scene_rep_reconstruction ({stage}): \033[96muse dense voxel grid\033[0m')
             num_voxels = model_kwargs.pop('num_voxels')
-            if len(cfg_train.pg_scale) and reload_ckpt_path is None:
-                num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
-            model = dvgo.DirectVoxGO(
-                xyz_min=xyz_min, xyz_max=xyz_max,
-                num_voxels=num_voxels,
-                mask_cache_path=coarse_ckpt_path,
-                **model_kwargs)
+            if stage == 'coarse':
+                # TODO how to let dvgo num_voxels be consistent with sr_dvgo
+                if len(cfg_train.pg_scale) and reload_ckpt_path is None:
+                    num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
+            
+                # TODO check whether pretrained coarse dvgo model can be used in sr_dvgo
+                model = dvgo.DirectVoxGO(
+                    xyz_min=xyz_min, xyz_max=xyz_max,
+                    num_voxels=num_voxels,
+                    mask_cache_path=coarse_ckpt_path,
+                    **model_kwargs)
+            else:
+                if cfg_model.use_coarse_geo:
+                    model = sr_dvgo.DirectVoxGO(
+                        xyz_min=xyz_min, xyz_max=xyz_max,
+                        num_voxels=num_voxels,
+                        mask_cache_path=coarse_ckpt_path,
+                        **model_kwargs)
+                else:
+                    model = sr_dvgo.DirectVoxGO(
+                        xyz_min=xyz_min, xyz_max=xyz_max,
+                        num_voxels=num_voxels,
+                        mask_cache_path=None,
+                        **model_kwargs)
+            
+            # TODO how to be consistent with sr_dvgo
             if cfg_model.maskout_near_cam_vox:
                 model.maskout_near_cam_vox(poses[i_train,:3,3], near)
         model = model.to(device)
@@ -280,7 +310,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
         else:
-            model_class = dvgo.DirectVoxGO
+            if stage == 'coarse':
+                model_class = dvgo.DirectVoxGO
+            else:
+                model_class = sr_dvgo.DirectVoxGO
+        
         model = utils.load_model(model_class, reload_ckpt_path).to(device)
         optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
         model, optimizer, start = utils.load_checkpoint(
@@ -295,52 +329,66 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         'inverse_y': cfg.data.inverse_y,
         'flip_x': cfg.data.flip_x,
         'flip_y': cfg.data.flip_y,
+        'normalize': cfg_train.normalize_lr,
     }
 
-    # init batch rays sampler
-    def gather_training_rays():
+    # in coarse stage use images_lr to filter emtpy space
+    def gather_training_rays_coarse():
+        if data_dict['irregular_shape']:
+            rgb_tr_ori = [images_lr[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
+        else:
+            rgb_tr_ori = images_lr[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+        
+        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays(
+            rgb_tr=rgb_tr_ori,
+            train_poses=poses[i_train],
+            HW=HW_lr[i_train], Ks=Ks_lr[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+            flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+        
+        return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
+    
+    def gather_training_rays_fine():
         if data_dict['irregular_shape']:
             rgb_tr_ori = [images[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
+            # rgb_tr_ori_lr = [images_lr[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
         else:
             rgb_tr_ori = images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+            # rgb_tr_ori_lr = images_lr[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+        
+        rgb_tr_ori_lr = images_lr[i_train]
 
         if cfg_train.ray_sampler == 'in_maskcache':
-            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling(
-                    rgb_tr_ori=rgb_tr_ori,
-                    train_poses=poses[i_train],
-                    HW=HW[i_train], Ks=Ks[i_train],
-                    ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
-                    flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
-                    model=model, render_kwargs=render_kwargs)
-        elif cfg_train.ray_sampler == 'flatten':
-            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_flatten(
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling_sr(
+                rgb_tr_ori_lr=rgb_tr_ori_lr, 
                 rgb_tr_ori=rgb_tr_ori,
                 train_poses=poses[i_train],
-                HW=HW[i_train], Ks=Ks[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
-                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+                HW=HW[i_train], Ks=Ks[i_train],
+                ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
+                model=model, render_kwargs=render_kwargs
+            )
         else:
-            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays(
-                rgb_tr=rgb_tr_ori,
-                train_poses=poses[i_train],
-                HW=HW[i_train], Ks=Ks[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
-                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        index_generator = ray_utils.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
-        batch_index_sampler = lambda: next(index_generator)
-        return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, batch_index_sampler
+            raise NotImplementedError
+        return rgb_tr_ori_lr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, 
 
-    rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, batch_index_sampler = gather_training_rays()
+    if stage == 'coarse':
+        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays_coarse()
+    else:
+        # TODO it seems to many pixels are wiped
+        rgb_lr_tr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz  = gather_training_rays_fine()
 
-    # view-count-based learning rate
-    if cfg_train.pervoxel_lr:
-        def per_voxel_init():
-            cnt = model.voxel_count_views(
-                    rays_o_tr=rays_o_tr, rays_d_tr=rays_d_tr, imsz=imsz, near=near, far=far,
-                    stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate,
-                    irregular_shape=data_dict['irregular_shape'])
-            optimizer.set_pervoxel_lr(cnt)
-            with torch.no_grad():
-                model.density[cnt <= 2] = -100
-        per_voxel_init()
+    if stage == 'coarse':
+        # view-count-based learning rate
+        if cfg_train.pervoxel_lr:
+            def per_voxel_init():
+                cnt = model.voxel_count_views(
+                        rays_o_tr=rays_o_tr, rays_d_tr=rays_d_tr, imsz=imsz, near=near, far=far,
+                        stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate,
+                        irregular_shape=data_dict['irregular_shape'])
+                optimizer.set_pervoxel_lr(cnt)
+                with torch.no_grad():
+                    model.density[cnt <= 2] = -100
+            per_voxel_init()
 
     # GOGO
     torch.cuda.empty_cache()
@@ -350,31 +398,27 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     for global_step in trange(1+start, 1+cfg_train.N_iters):
 
         # renew occupancy grid
-        if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
-            self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
-            model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
-
+        # TODO how to enable mask_cache
+        # if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
+        #     self_alpha = F.max_pool3d(model.alpha, kernel_size=3, padding=1, stride=1)[0,0]
+        #     model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
+        
         # progress scaling checkpoint
-        if global_step in cfg_train.pg_scale:
-            n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
-            cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
-            if isinstance(model, dvgo.DirectVoxGO):
-                model.scale_volume_grid(cur_voxels)
-            elif isinstance(model, dmpigo.DirectMPIGO):
-                model.scale_volume_grid(cur_voxels, model.mpi_depth)
-            else:
-                raise NotImplementedError
-            optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-            model.density.data.sub_(1)
+        if stage == 'coarse':
+            if global_step in cfg_train.pg_scale:
+                n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
+                cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
+                if isinstance(model, dvgo.DirectVoxGO):
+                    model.scale_volume_grid(cur_voxels)
+                elif isinstance(model, dmpigo.DirectMPIGO):
+                    model.scale_volume_grid(cur_voxels, model.mpi_depth)
+                else:
+                    raise NotImplementedError
+                optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
+                model.density.data.sub_(1)
 
         # random sample rays
-        if cfg_train.ray_sampler in ['flatten', 'in_maskcache']:
-            sel_i = batch_index_sampler()
-            target = rgb_tr[sel_i]
-            rays_o = rays_o_tr[sel_i]
-            rays_d = rays_d_tr[sel_i]
-            viewdirs = viewdirs_tr[sel_i]
-        elif cfg_train.ray_sampler == 'random':
+        if cfg_train.ray_sampler == 'random' and stage == 'coarse':
             sel_b = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
             sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
             sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
@@ -382,6 +426,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rays_o = rays_o_tr[sel_b, sel_r, sel_c]
             rays_d = rays_d_tr[sel_b, sel_r, sel_c]
             viewdirs = viewdirs_tr[sel_b, sel_r, sel_c]
+        elif stage == 'fine' and cfg_train.ray_sampler == 'in_maskcache':
+            i = torch.randint(rgb_lr_tr.shape[0], [1])
+            rgb_lr = rgb_lr_tr[i]
+            sel_c = torch.randint(rgb_lr_tr.shape[2], [cfg_train.N_rand])
+            rays_o = rays_o_tr[i][sel_c]
+            rays_d = rays_d_tr[i][sel_c]
+            viewdirs = viewdirs_tr[i][sel_c]
         else:
             raise NotImplementedError
 
@@ -392,21 +443,50 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             viewdirs = viewdirs.to(device)
 
         # volume rendering
-        render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+        if stage == 'coarse':
+            render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+        else:
+            rgb_lr = rgb_lr.detach().numpy()
+            rgb_lr = transforms.ToTensor()(rgb_lr[0]).unsqueeze(0).to(device)
+            if cfg_train.normalize_lr:
+                rgb_lr = (rgb_lr - 0.5) / 0.5
+            render_result = model(rgb_lr, rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+        
         weigths = render_result['weights']
         rgb_marched = render_result['rgb_marched']
+        # try:
+        #     print('weights', render_result['weights'].min(), render_result['weights'].max())
+        # except:
+        #     print(render_result['weights'].shape)
+        #     exit()
+
+        # update lr
+        if global_step < cfg_train.warmup_iters:
+            if global_step == 1+start:
+                decay_factor = float(global_step) / cfg_train.warmup_iters
+            else:
+                decay_factor = float(global_step) / cfg_train.warmup_iters 
+                decay_factor = decay_factor * cfg_train.warmup_iters / float(global_step-1)
+        else:
+            decay_steps = cfg_train.lrate_decay * 1000
+            decay_factor = 0.1 ** (1/decay_steps)
+        for i_opt_g, param_group in enumerate(optimizer.param_groups):
+            param_group['lr'] = param_group['lr'] * decay_factor
+            if i_opt_g == 0:
+                _lr = param_group['lr']
+
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
-        loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+        loss = F.mse_loss(render_result['rgb_marched'], target)
         psnr = utils.mse2psnr(loss.detach())
-        if cfg_train.weight_entropy_last > 0:
-            pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
-            entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
-            loss += cfg_train.weight_entropy_last * entropy_last_loss
-        if cfg_train.weight_rgbper > 0:
-            rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
-            rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
-            loss += cfg_train.weight_rgbper * rgbper_loss
+        # if cfg_train.weight_entropy_last > 0:
+        #     pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
+        #     entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
+        #     loss += cfg_train.weight_entropy_last * entropy_last_loss
+        # if cfg_train.weight_rgbper > 0:
+        #     rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
+        #     rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
+        #     loss += cfg_train.weight_rgbper * rgbper_loss
         loss.backward()
 
         if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
@@ -420,24 +500,16 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         optimizer.step()
         psnr_lst.append(psnr.item())
 
-        # update lr
-        decay_steps = cfg_train.lrate_decay * 1000
-        decay_factor = 0.1 ** (1/decay_steps)
-        for i_opt_g, param_group in enumerate(optimizer.param_groups):
-            param_group['lr'] = param_group['lr'] * decay_factor
-            if i_opt_g == 0:
-                _lr = param_group['lr']
-
         # check log & save
         if global_step%args.i_print==0:
             eps_time = time.time() - time0
-            eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
+            # eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
             tqdm.write(f'scene_rep_reconstruction ({stage}): iter {global_step:6d} / '
-                    #    f'weights ({weigths.min():.4f}, {weigths.max():.4f}) / '
-                    #    f'rgb_marched ({rgb_marched.min():.4f}, {rgb_marched.max():.4f}) / '
+                       f'weights ({weigths.min():.4f}, {weigths.max():.4f}) / '
+                       f'rgb_marched ({rgb_marched.min():.4f}, {rgb_marched.max():.4f}) / '
                        f'Loss: {loss.item():.9f} / PSNR: {np.mean(psnr_lst):5.2f} / '
-                       f'lr: {_lr:.6f}'
-                       f'Eps: {eps_time_str}')
+                    #    f'Eps: {eps_time_str} / '
+                       f'lr: {_lr:.9f}')
             psnr_lst = []
 
         if global_step%args.i_weights==0:
@@ -488,16 +560,21 @@ def train(args, cfg, data_dict):
     else:
         print('train: skip coarse geometry searching')
         coarse_ckpt_path = None
-
+    
+    print()
     # fine detail reconstruction
     eps_fine = time.time()
     if cfg.data.ndc:
         xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
     else:
         if cfg.fine_model_and_render.use_coarse_geo:
-            xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
-                    model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
-                    thres=cfg.fine_model_and_render.bbox_thres)
+            try:
+                xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
+                        model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
+                        thres=cfg.fine_model_and_render.bbox_thres)
+            except Exception as e:
+                print(e)
+                xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
         else:
             xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
     scene_rep_reconstruction(
@@ -557,7 +634,7 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(sr_dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
@@ -568,7 +645,7 @@ if __name__=='__main__':
         print('Export fine visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'fine_last.tar')
-            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(sr_dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_fine_only, alpha=alpha, rgb=rgb)
@@ -589,7 +666,7 @@ if __name__=='__main__':
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
         else:
-            model_class = dvgo.DirectVoxGO
+            model_class = sr_dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path).to(device)
         stepsize = cfg.fine_model_and_render.stepsize
         render_viewpoints_kwargs = {
@@ -604,6 +681,7 @@ if __name__=='__main__':
                 'flip_x': cfg.data.flip_x,
                 'flip_y': cfg.data.flip_y,
                 'render_depth': True,
+                'normalize': cfg.fine_train.normalize_lr,
             },
         }
 
@@ -616,6 +694,7 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
+                lr_imgs=[data_dict['images_lr'][i].cpu().numpy() for i in data_dict['i_train']],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -631,6 +710,7 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
+                lr_imgs=[data_dict['images_lr'][i].cpu().numpy() for i in data_dict['i_test']],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -645,6 +725,7 @@ if __name__=='__main__':
                 render_poses=data_dict['render_poses'],
                 HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
                 Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                lr_imgs=[data_dict['images_lr'][i].cpu().numpy() for i in data_dict['i_test']],
                 render_factor=args.render_video_factor,
                 savedir=testsavedir,
                 **render_viewpoints_kwargs)

@@ -1,6 +1,8 @@
+import imp
 import os
 import time
 import functools
+from turtle import pos
 from matplotlib.pyplot import step
 import numpy as np
 
@@ -26,6 +28,10 @@ total_variation_cuda = load(
             for path in ['cuda/total_variation.cpp', 'cuda/total_variation_kernel.cu']],
         verbose=True)
 
+from .backbone import make_edsr, make_edsr_baseline
+from .mlp import MLP
+from .backbone import resnet_extractor
+
 
 '''Model'''
 class DirectVoxGO(torch.nn.Module):
@@ -34,18 +40,44 @@ class DirectVoxGO(torch.nn.Module):
                  alpha_init=None,
                  mask_cache_path=None, mask_cache_thres=1e-3,
                  fast_color_thres=0,
-                 rgbnet_dim=0, rgbnet_direct=False, rgbnet_full_implicit=False,
-                 rgbnet_depth=3, rgbnet_width=128,
+                 net_depth=3, net_width=128,
                  viewbase_pe=4,
+                 posbase_pe=10,
 
-                 posbase_pe=0, 
+                 add_posemb=True, 
+                 lr_w=200, lr_h=200,
+
                  implicit_voxel_feat=False, feat_unfold=False, local_ensemble=True, cell_decode=True,
+
+                 name='edsr-baseline', n_resblocks=16, n_feats=64, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
+                 pretrained_state_dict=None,
+                 normalize=False,
+                 
+                 
                  **kwargs):
         super(DirectVoxGO, self).__init__()
+        self.add_posemb = add_posemb
+        self.normalize = normalize
+
+        self.n_feats = n_feats
+        # self.edsr_kwargs = {
+        #     'n_resblocks': n_resblocks, 'n_feats': n_feats, 'res_scale': res_scale,  
+        #     'scale': scale, 'no_upsampling': no_upsampling, 'rgb_range': rgb_range,
+        # }
+        # self.encoder = make_edsr_baseline(**self.edsr_kwargs)
+        # if pretrained_state_dict:
+        #     sd = torch.load(pretrained_state_dict)
+        #     self.encoder.load_state_dict(sd)
+        #     print('loaded edsr weights from: ', pretrained_state_dict)
+        
+        
+        # # self.encoder = resnet_extractor()
+        # print(self.encoder)
+        # print()
+
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
         self.register_buffer('xyz_max', torch.Tensor(xyz_max))
         self.fast_color_thres = fast_color_thres
-        self.posbase_pe = posbase_pe
 
         # liif configs
         self.implicit_voxel_feat = implicit_voxel_feat
@@ -56,82 +88,73 @@ class DirectVoxGO(torch.nn.Module):
         # determine based grid resolution
         self.num_voxels_base = num_voxels_base
         self.voxel_size_base = ((self.xyz_max - self.xyz_min).prod() / self.num_voxels_base).pow(1/3)
+        self.lr_w = lr_w
+        self.lr_h = lr_h
 
         # determine the density bias shift
         self.alpha_init = alpha_init
         self.act_shift = np.log(1/(1-alpha_init) - 1)
         print('dvgo: set density bias shift to', self.act_shift)
-
+        
         # determine init grid resolution
+        # change grid resolution voxel_size is different among x y z axis
+        # num_voxels should be maintained, to determine z axis grid number
         self._set_grid_resolution(num_voxels)
 
-        # init density voxel grid
-        self.density = torch.nn.Parameter(torch.zeros([1, 1, *self.world_size]))
-
-        # init color representation
-        self.rgbnet_kwargs = {
-            'rgbnet_dim': rgbnet_dim, 'rgbnet_direct': rgbnet_direct,
-            'rgbnet_full_implicit': rgbnet_full_implicit,
-            'rgbnet_depth': rgbnet_depth, 'rgbnet_width': rgbnet_width,
+        # init density & color representation MLP
+        self.net_kwargs = {
+            'add_posemb': self.add_posemb, 
+            'net_depth': net_depth, 'net_width': net_width, 
             'viewbase_pe': viewbase_pe,
-            'posbase_pe': posbase_pe,
+            'posbase_pe': posbase_pe, 
             'implicit_voxel_feat': implicit_voxel_feat, 
             'feat_unfold': feat_unfold, 
             'local_ensemble': local_ensemble, 
-            'cell_decode': cell_decode,
+            'cell_decode': cell_decode, 
         }
-        self.rgbnet_full_implicit = rgbnet_full_implicit
-        if rgbnet_dim <= 0:
-            # color voxel grid  (coarse stage)
-            self.k0_dim = 3
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
-            self.rgbnet = None
+
+        
+        self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
+        self.register_buffer('posfreq', torch.FloatTensor([(2**i) for i in range(posbase_pe)]))
+        views_dim = (3+3*viewbase_pe*2)
+        pos_dim = (3+3*posbase_pe*2)
+        print()
+        if not self.implicit_voxel_feat:
+            # TODO
+            dim0 = n_feats
+            print()
         else:
-            # feature voxel grid + shallow MLP  (fine stage)
-            if self.rgbnet_full_implicit:
-                self.k0_dim = 0
-            else:
-                self.k0_dim = rgbnet_dim
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
-            self.rgbnet_direct = rgbnet_direct
-            self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
-            if posbase_pe > 0:
-                self.register_buffer('posfreq', torch.FloatTensor([(2**i) for i in range(posbase_pe)]))
-            dim0 = (3+3*viewbase_pe*2)
-            if self.rgbnet_full_implicit:
-                pass
-            elif posbase_pe > 0:
-                dim0 += (3+3*posbase_pe*2)
-            elif rgbnet_direct:
-                dim0 += self.k0_dim
-            else:
-                dim0 += self.k0_dim-3
-            
-            if self.implicit_voxel_feat:
-                print("\n\033[96mimplicit voxel feat!!!\033[0m")
-                imnet_in_dim = self.k0_dim
-                if self.feat_unfold:
-                    imnet_in_dim *= 27
-                imnet_in_dim += 3 # attach coord
-                if self.cell_decode:
-                    imnet_in_dim += 3
-                dim0 = imnet_in_dim + 3+3*viewbase_pe*2
-                print('dvgo: dim0              ', dim0)
-                print('dvgo: feat_unfold       ', self.feat_unfold)
-                print('dvgo: cell_decode       ', self.cell_decode)
-                print('dvgo: local_ensemble    ', self.local_ensemble)
-                print()
-            self.rgbnet = nn.Sequential(
-                nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                *[
-                    nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
-                    for _ in range(rgbnet_depth-2)
-                ],
-                nn.Linear(rgbnet_width, 3),
-            )
-            nn.init.constant_(self.rgbnet[-1].bias, 0)
-            print('dvgo: feature voxel grid', self.k0.shape)
-            print('dvgo: mlp', self.rgbnet)
+            print("\n\033[96mimplicit voxel feat!!!\033[0m")
+            imnet_in_dim = n_feats
+            if self.feat_unfold:
+                imnet_in_dim *= 27
+            imnet_in_dim += 3 # attach coord
+            if self.cell_decode:
+                imnet_in_dim += 3
+            dim0 = imnet_in_dim
+            print('dvgo: feat_unfold       ', self.feat_unfold)
+            print('dvgo: cell_decode       ', self.cell_decode)
+            print('dvgo: local_ensemble    ', self.local_ensemble)
+            print()
+        
+        if self.add_posemb:
+            dim0 += pos_dim
+        
+        print('dvgo: dim0            ', dim0)
+        
+        self.net = MLP(
+            # TODO
+            in_dim=pos_dim, # dim0,
+            views_dim=views_dim,
+            depth=net_depth,
+            width=net_width,
+        )
+
+        nn.init.constant_(self.net.rgb_linear.bias, 0)
+        # TODO init density value or not? use what kind of activation ??
+        nn.init.constant_(self.net.density_linear.bias, 0)
+        print('dvgo: mlp', self.net)
+
 
         # Using the coarse geometry if provided (used to determine known free space and unknown space)
         # Re-implement as occupancy grid (2021/1/31)
@@ -142,10 +165,12 @@ class DirectVoxGO(torch.nn.Module):
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
             self_grid_xyz = torch.stack(torch.meshgrid(
-                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1]),
             ), -1)
+
+            # IMPORTANT not normalized in 0, 1
             mask = mask_cache(self_grid_xyz)
         else:
             mask = torch.ones(list(self.world_size), dtype=torch.bool)
@@ -156,10 +181,18 @@ class DirectVoxGO(torch.nn.Module):
     def _set_grid_resolution(self, num_voxels):
         # Determine grid resolution
         self.num_voxels = num_voxels
-        self.voxel_size = ((self.xyz_max - self.xyz_min).prod() / num_voxels).pow(1/3)
-        self.world_size = ((self.xyz_max - self.xyz_min) / self.voxel_size).long()
-        self.voxel_size_ratio = self.voxel_size / self.voxel_size_base
-        print('\ndvgo: voxel_size      ', self.num_voxels)
+        x, y, z = self.lr_w, self.lr_h, num_voxels // (self.lr_h * self.lr_w)
+        vx = (self.xyz_max[0] - self.xyz_min[0]) / x 
+        vy = (self.xyz_max[1] - self.xyz_min[1]) / y
+        vz = (self.xyz_max[2] - self.xyz_min[2]) / z
+        self.voxel_size = min(min(vx, vy), vz)
+        # TODO
+        self.voxel_size_ratio = 1 #  self.voxel_size / self.voxel_size_base
+
+        self.world_size = torch.Tensor([x, y, z]).long()
+
+        print()
+        print('dvgo: voxel_size      ', self.num_voxels)
         print('dvgo: voxel_size      ', self.voxel_size)
         print('dvgo: world_size      ', self.world_size)
         print('dvgo: voxel_size_base ', self.voxel_size_base)
@@ -181,7 +214,8 @@ class DirectVoxGO(torch.nn.Module):
             'feat_unfold': self.feat_unfold, 
             'local_ensemble': self.local_ensemble, 
             'cell_decode': self.cell_decode,
-            **self.rgbnet_kwargs,
+            **self.net_kwargs,
+            **self.edsr_kwargs,
         }
 
     def unfold_feat(self, inp):
@@ -198,9 +232,8 @@ class DirectVoxGO(torch.nn.Module):
         out = torch.cat(lst, dim=1)
         return out
     
-
     def make_coord(self):
-
+        # normalized to [-1, 1]
         self_grid_xyz = torch.stack(
             torch.meshgrid(
                 torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3]),
@@ -212,103 +245,15 @@ class DirectVoxGO(torch.nn.Module):
         self_grid_xyz = ((self_grid_xyz - self.xyz_min) / (self.xyz_max - self.xyz_min)).flip((-1,)) * 2 - 1
 
         return self_grid_xyz
-    
-    @torch.no_grad()
-    def maskout_near_cam_vox(self, cam_o, near):
-        self_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
-        ), -1)
-        nearest_dist = torch.stack([
-            (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
-            for co in cam_o.split(100)  # for memory saving
-        ]).amin(0)
-        self.density[nearest_dist[None,None] <= near] = -100
-
-    @torch.no_grad()
-    def scale_volume_grid(self, num_voxels):
-        print('dvgo: scale_volume_grid start')
-        ori_world_size = self.world_size
-        self._set_grid_resolution(num_voxels)
-        print('dvgo: scale_volume_grid scale world_size from', ori_world_size, 'to', self.world_size)
-
-        self.density = torch.nn.Parameter(
-            F.interpolate(self.density.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
-        if self.k0_dim > 0:
-            self.k0 = torch.nn.Parameter(
-                F.interpolate(self.k0.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
-        else:
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
-        
-        if self.mask_cache_path: 
-            # loaded from the coarse cache
-            mask_cache = MaskCache(
-                path=self.mask_cache_path,
-                mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
-            self_grid_xyz = torch.stack(torch.meshgrid(
-                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
-            ), -1)
-
-            coarse_mask = mask_cache(self_grid_xyz)
-        
-        self_alpha = F.max_pool3d(self.activate_density(self.density), kernel_size=3, padding=1, stride=1)[0,0]
-        
-        mask = coarse_mask & (self_alpha>self.fast_color_thres) if self.mask_cache_path else (self_alpha>self.fast_color_thres)
-        self.mask_cache = MaskCache(
-            path=None, mask=mask,
-            xyz_min=self.xyz_min, xyz_max=self.xyz_max)
-
-        print('dvgo: scale_volume_grid finish')
-
-    def voxel_count_views(self, rays_o_tr, rays_d_tr, imsz, near, far, stepsize, downrate=1, irregular_shape=False):
-        print('dvgo: voxel_count_views start')
-        eps_time = time.time()
-        N_samples = int(np.linalg.norm(np.array(self.density.shape[2:])+1) / stepsize) + 1
-        rng = torch.arange(N_samples)[None].float()
-        count = torch.zeros_like(self.density.detach())
-        device = rng.device
-        for rays_o_, rays_d_ in zip(rays_o_tr.split(imsz), rays_d_tr.split(imsz)):
-            ones = torch.ones_like(self.density).requires_grad_()
-            if irregular_shape:
-                rays_o_ = rays_o_.split(10000)
-                rays_d_ = rays_d_.split(10000)
-            else:
-                rays_o_ = rays_o_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
-                rays_d_ = rays_d_[::downrate, ::downrate].to(device).flatten(0,-2).split(10000)
-
-            for rays_o, rays_d in zip(rays_o_, rays_d_):
-                vec = torch.where(rays_d==0, torch.full_like(rays_d, 1e-6), rays_d)
-                rate_a = (self.xyz_max - rays_o) / vec
-                rate_b = (self.xyz_min - rays_o) / vec
-                t_min = torch.minimum(rate_a, rate_b).amax(-1).clamp(min=near, max=far)
-                t_max = torch.maximum(rate_a, rate_b).amin(-1).clamp(min=near, max=far)
-                step = stepsize * self.voxel_size * rng
-                interpx = (t_min[...,None] + step/rays_d.norm(dim=-1,keepdim=True))
-                rays_pts = rays_o[...,None,:] + rays_d[...,None,:] * interpx[...,None]
-                self.grid_sampler(rays_pts, ones).sum().backward()
-            with torch.no_grad():
-                count += (ones.grad > 1)
-        eps_time = time.time() - eps_time
-        print('dvgo: voxel_count_views finish (eps time:', eps_time, 'sec)')
-        return count
-
-    def density_total_variation_add_grad(self, weight, dense_mode):
-        weight = weight * self.world_size.max() / 128
-        total_variation_cuda.total_variation_add_grad(
-            self.density, self.density.grad, weight, weight, weight, dense_mode)
-
-    def k0_total_variation_add_grad(self, weight, dense_mode):
-        weight = weight * self.world_size.max() / 128
-        total_variation_cuda.total_variation_add_grad(
-            self.k0, self.k0.grad, weight, weight, weight, dense_mode)
 
     def activate_density(self, density, interval=None):
-        interval = interval if interval is not None else self.voxel_size_ratio
         shape = density.shape
-        return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
+        alpha = raw2alpha(density, self.act_shift, interval).reshape(shape)
+        # alpha = raw2alpha(density, 0, interval).reshape(shape)
+        # interval = interval if interval is not None else self.voxel_size_ratio
+        # shape = density.shape
+        # alpha = Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
+        return alpha
 
     def grid_sampler(self, xyz, *grids, mode=None, align_corners=True, is_k0=False, stepsize=None):
         '''Wrapper for the interp operation'''
@@ -318,7 +263,7 @@ class DirectVoxGO(torch.nn.Module):
         if not self.implicit_voxel_feat or not is_k0:
             mode = 'bilinear'
             ret_lst = [
-                # TODO: use `rearrange' to make it readable
+                # use `rearrange' to make it readable
                 F.grid_sample(grid, ind_norm, mode=mode, align_corners=align_corners).reshape(grid.shape[1],-1).T.reshape(*shape,grid.shape[1])
                 for grid in grids
             ]
@@ -403,12 +348,13 @@ class DirectVoxGO(torch.nn.Module):
                             rel_cell = cell.clone()
                             inp = torch.cat([inp, rel_cell], dim=-1) # k0 shape [x, self.k0_dim*27+3+3]
                         
-                        assert inp.shape[-1] in [self.k0_dim + 3, self.k0_dim + 6, self.k0_dim * 27 + 3, self.k0_dim * 27 + 6]
+                        assert inp.shape[-1] in [self.n_feats + 3, self.n_feats + 6, self.n_feats * 27 + 3, self.n_feats * 27 + 6]
                         inps.append(inp)
             
             
             assert len(volumes) == 8
             return inps, volumes
+
 
     def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
         '''Check whether the rays hit the solved coarse geometry or not'''
@@ -423,7 +369,8 @@ class DirectVoxGO(torch.nn.Module):
         hit[ray_id[mask_inbbox][self.mask_cache(ray_pts[mask_inbbox])]] = 1
         return hit.reshape(shape)
 
-    def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=0, **render_kwargs):
+
+    def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=False, **render_kwargs):
         '''Sample query points on rays.
         All the output points are sorted from near to far.
         Input:
@@ -438,8 +385,6 @@ class DirectVoxGO(torch.nn.Module):
         rays_o = rays_o.contiguous()
         rays_d = rays_d.contiguous()
         stepdist = stepsize * self.voxel_size
-        # print(rays_o.shape, rays_d.shape, self.xyz_min, self.xyz_max, near, far, stepdist)
-        
         ray_pts, mask_outbbox, ray_id, step_id, N_steps, t_min, t_max = render_utils_cuda.sample_pts_on_rays(
             rays_o, rays_d, self.xyz_min, self.xyz_max, near, far, stepdist)
         mask_inbbox = ~mask_outbbox
@@ -448,7 +393,8 @@ class DirectVoxGO(torch.nn.Module):
         step_id = step_id[mask_inbbox]
         return ray_pts, ray_id, step_id
 
-    def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
+    
+    def forward(self, rgb_lr, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
@@ -456,36 +402,101 @@ class DirectVoxGO(torch.nn.Module):
         '''
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
 
+        # feats = self.encoder(rgb_lr)
+        # feats = feats.unsqueeze(-1).repeat(1, 1, 1, 1, self.world_size[-1])
+
         ret_dict = {}
         N = len(rays_o)
 
         # sample points on rays
         ray_pts, ray_id, step_id = self.sample_ray(
                 rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
-        # ray_pts, ray_id, step_id = self.sample_ray(
-        #         rays_o=rays_o, rays_d=rays_d, is_train=global_step, **render_kwargs)
-        interval = render_kwargs['stepsize'] * self.voxel_size_ratio
+        interval = render_kwargs['stepsize'] * self.voxel_size
+        
+        if self.add_posemb:
+            pos_emb = (ray_pts.unsqueeze(-1) * self.posfreq).flatten(-2)
+            pos_emb = torch.cat([ray_pts, pos_emb.sin(), pos_emb.cos()], -1)
 
+        # print(step_id.shape)
+        # print(step_id.min(), step_id.max())
+        # print(step_id[:5])
+
+        # query for rgb and density
+        # inp_k0 = feats
+        # if self.implicit_voxel_feat:
+        #     if self.feat_unfold:
+        #         inp_k0 = self.unfold_feat(inp_k0)
+        #     k0s, volumes = self.grid_sampler(ray_pts, inp_k0, is_k0=True, stepsize=interval)
+
+        # else:
+        #     k0 = self.grid_sampler(ray_pts, inp_k0)
+        
+        viewdirs_emb = (viewdirs.unsqueeze(-1) * self.viewfreq).flatten(-2)
+        viewdirs_emb = torch.cat([viewdirs, viewdirs_emb.sin(), viewdirs_emb.cos()], -1)
+        viewdirs_emb = viewdirs_emb.flatten(0,-2)[ray_id]
+
+        # if self.add_posemb:
+        #     k0 = torch.cat((k0, pos_emb), dim=-1)
+
+        if not self.implicit_voxel_feat:
+            # TODO
+            rgb_logit, density = self.net(pos_emb, viewdirs_emb) # self.net(k0, viewdirs_emb)
+            rgb = torch.sigmoid(rgb_logit)
+            # if self.normalize:
+            #     rgb = (rgb_logit * 0.5 + 0.5).clamp(0, 1)
+            # else:
+            #     rgb = torch.sigmoid(rgb_logit)
+            # print('interval', render_kwargs['stepsize'] * self.voxel_size_ratio)
+            alpha = self.activate_density(density, interval=render_kwargs['stepsize'] * self.voxel_size_ratio)
+        else:
+            tot_vol = torch.stack(volumes).sum(dim=0)
+            rgb = 0
+            alpha = 0
+            for k0, volume in zip(k0s, volumes):
+                rgb_logit, density = self.net(k0, viewdirs_emb)
+                # TODO a bunch of sigmoid results -- > weighted sum ???
+                pred_rgb = torch.sigmoid(rgb_logit)
+                # if self.normalize:
+                #     pred_rgb = (rgb_logit * 0.5 + 0.5).clamp(0, 1)
+                # else:
+                #     pred_rgb = torch.sigmoid(rgb_logit)
+                pred_alpha = self.activate_density(density, interval)
+                # TODO swap volume ???
+                rgb = rgb + pred_rgb * (volume / tot_vol).unsqueeze(-1)
+                alpha = alpha + pred_alpha * (volume / tot_vol).unsqueeze(-1)
+
+        assert rgb.shape[0] == alpha.shape[0] and rgb.shape[0] == ray_pts.shape[0] and rgb.shape[0] == step_id.shape[0]
+        
+        # print('rgb', rgb.min(), rgb.max())
+        # print('alpha', alpha.min(), alpha.max(), alpha.shape)
         # skip known free space
         if self.mask_cache is not None:
             mask = self.mask_cache(ray_pts)
             ray_pts = ray_pts[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
+            rgb = rgb[mask]
 
-        # query for alpha w/ post-activation
-        density = self.grid_sampler(ray_pts, self.density)
-        alpha = self.activate_density(density, interval)
-        if self.fast_color_thres > 0:
-            mask = (alpha > self.fast_color_thres)
-            ray_pts = ray_pts[mask]
-            ray_id = ray_id[mask]
-            step_id = step_id[mask]
-            density = density[mask]
-            alpha = alpha[mask]
+        assert rgb.shape[0] == alpha.shape[0] and rgb.shape[0] == ray_pts.shape[0] and rgb.shape[0] == step_id.shape[0]
+        
+        # # query for alpha w/ post-activation
+        # if self.fast_color_thres > 0:
+        #     mask = (alpha > self.fast_color_thres).squeeze(-1)
+        #     ray_pts = ray_pts[mask]
+        #     ray_id = ray_id[mask]
+        #     step_id = step_id[mask]
+        #     alpha = alpha[mask]
+        #     alpha = alpha.squeeze(-1)
+        #     rgb = rgb[mask]
+        
+        assert rgb.shape[0] == alpha.shape[0] and rgb.shape[0] == ray_pts.shape[0] and rgb.shape[0] == step_id.shape[0]
 
         # compute accumulated transmittance
+        alpha = alpha.squeeze(-1)
+        # print(alpha.shape)
+        # print(ray_id.shape)
         weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
+        # print('weights', weights.min(), weights.max())
         if self.fast_color_thres > 0:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]
@@ -493,70 +504,20 @@ class DirectVoxGO(torch.nn.Module):
             ray_pts = ray_pts[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
+            rgb = rgb[mask]
         
-        # print('alpha:', alpha.min(), alpha.max())
-        # query for color
-        if not self.rgbnet_full_implicit:
-            # lego coarse self.k0 [1, 3, 107, 107, 88]
-            #             k0 feature 12
-            inp_k0 = self.k0
-            if self.implicit_voxel_feat and self.feat_unfold:
-                inp_k0 = self.unfold_feat(self.k0)
-
-            if self.implicit_voxel_feat:
-                k0s, volumes = self.grid_sampler(ray_pts, inp_k0, is_k0=True, stepsize=render_kwargs['stepsize'])
-
-            else:
-                k0 = self.grid_sampler(ray_pts, inp_k0, is_k0=True)
+        assert rgb.shape[0] == alpha.shape[0] and rgb.shape[0] == ray_pts.shape[0] and rgb.shape[0] == step_id.shape[0] and rgb.shape[0] == weights.shape[0]
         
-        
-        if self.rgbnet is None:
-            # no view-depend effect
-            rgb = torch.sigmoid(k0)
-        else:
-            # view-dependent color emission
-            if self.rgbnet_direct and not self.implicit_voxel_feat:
-                k0_view = k0
-            elif self.rgbnet_direct and self.implicit_voxel_feat:
-                k0_views = k0s
-            else:
-                k0_view = k0[:, 3:]
-                k0_diffuse = k0[:, :3]
-            viewdirs_emb = (viewdirs.unsqueeze(-1) * self.viewfreq).flatten(-2)
-            viewdirs_emb = torch.cat([viewdirs, viewdirs_emb.sin(), viewdirs_emb.cos()], -1)
-            viewdirs_emb = viewdirs_emb.flatten(0,-2)[ray_id]
-            if not self.implicit_voxel_feat:
-                if self.posbase_pe > 0:
-                    # ray_pts already masked !
-                    pos_emb = (ray_pts.unsqueeze(-1) * self.posfreq).flatten(-2)
-                    pos_emb = torch.cat([ray_pts, pos_emb.sin(), pos_emb.cos()], -1)
-                    rgb_feat = torch.cat([pos_emb, viewdirs_emb], -1)
-                    rgb_logit = self.rgbnet(rgb_feat)
-                    rgb = torch.sigmoid(rgb_logit)
-                else:
-                    rgb_feat = torch.cat([k0_view, viewdirs_emb], -1)
-                    rgb_logit = self.rgbnet(rgb_feat)
-                    if self.rgbnet_direct:
-                        rgb = torch.sigmoid(rgb_logit)
-                    else:
-                        rgb = torch.sigmoid(rgb_logit + k0_diffuse)
-            else:
-                tot_vol = torch.stack(volumes).sum(dim=0)
-                rgb = 0
-                for k0_view, volume in zip(k0_views, volumes):
-                    rgb_feat = torch.cat([k0_view, viewdirs_emb], -1)
-                    rgb_logit = self.rgbnet(rgb_feat)
-                    # TODO a bunch of sigmoid results -- > weighted sum ???
-                    pred = torch.sigmoid(rgb_logit)
-                    # TODO swap volume ???
-                    rgb = rgb + pred * (volume / tot_vol).unsqueeze(-1)
-
         # Ray marching
+        # print(rgb.shape)
+        # print(weights.shape)
+        # exit()
         rgb_marched = segment_coo(
                 src=(weights.unsqueeze(-1) * rgb),
                 index=ray_id,
                 out=torch.zeros([N, 3]),
                 reduce='sum')
+        
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
             'alphainv_last': alphainv_last,
@@ -659,3 +620,12 @@ class Alphas2Weights(torch.autograd.Function):
                 alpha, weights, T, alphainv_last,
                 i_start, i_end, ctx.n_rays, grad_weights, grad_last)
         return grad, None, None
+
+def raw2alpha(density, act_shift, interval):
+    # act_fn = F.relu
+    # alpha = 1.-torch.exp(-act_fn(density) * interval)
+    # di = -act_fn(density) * interval
+    # print('density*interval', di.min(), di.max())
+    # print('density', -act_fn(density).min(), -act_fn(density).max())
+    alpha = 1. - (1. + torch.exp(density+act_shift)) ** (-interval)
+    return alpha

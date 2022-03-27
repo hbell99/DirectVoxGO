@@ -1,7 +1,7 @@
 import numpy as np
 
 from .load_llff import load_llff_data
-from .load_blender import load_blender_data
+from .load_blender import load_blender_data, load_blender_data_lrsr
 from .load_nsvf import load_nsvf_data
 from .load_blendedmvs import load_blendedmvs_data
 from .load_tankstemple import load_tankstemple_data
@@ -43,8 +43,12 @@ def load_data(args):
         print('NEAR FAR', near, far)
 
     elif args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
-        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        if args.task == 'sr':
+            images_lr, images, poses, render_poses, hwf, hwf_lr, i_split = load_blender_data_lrsr(basedir=args.datadir, down=args.down, testskip=args.testskip)
+            print('Loaded sr blender', images.shape, images_lr.shape, render_poses.shape, hwf, hwf_lr, args.datadir)
+        else:
+            images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+            print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
         near, far = 2., 6.
@@ -52,8 +56,12 @@ def load_data(args):
         if images.shape[-1] == 4:
             if args.white_bkgd:
                 images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
+                if args.task == 'sr':
+                    images_lr = images_lr[...,:3]*images_lr[...,-1:] + (1.-images_lr[...,-1:])
             else:
                 images = images[...,:3]*images[...,-1:]
+                if args.task == 'sr':
+                    images_lr = images_lr[...,:3]*images_lr[...,-1:]
 
     elif args.dataset_type == 'blendedmvs':
         images, poses, render_poses, hwf, K, i_split = load_blendedmvs_data(args.datadir)
@@ -123,6 +131,8 @@ def load_data(args):
     H, W = int(H), int(W)
     hwf = [H, W, focal]
     HW = np.array([im.shape[:2] for im in images])
+    if args.task == 'sr':
+        HW_lr = np.array([im.shape[:2] for im in images_lr])
     irregular_shape = (images.dtype is np.dtype('object'))
 
     if K is None:
@@ -131,21 +141,46 @@ def load_data(args):
             [0, focal, 0.5*H],
             [0, 0, 1]
         ])
+        if args.task == 'sr':
+            H_lr, W_lr, focal_lr = hwf_lr
+            H_lr, W_lr = int(H_lr), int(W_lr)
+            hwf = [H_lr, W_lr, focal]
+            K_lr = np.array([
+                [focal_lr, 0, 0.5*W_lr],
+                [0, focal_lr, 0.5*H_lr],
+                [0, 0, 1]
+            ])
 
     if len(K.shape) == 2:
         Ks = K[None].repeat(len(poses), axis=0)
+        if args.task == 'sr':
+            Ks_lr = K_lr[None].repeat(len(poses), axis=0)
     else:
         Ks = K
+        if args.task == 'sr':
+            Ks_lr = K_lr
 
     render_poses = render_poses[...,:4]
 
-    data_dict = dict(
-        hwf=hwf, HW=HW, Ks=Ks, near=near, far=far,
-        i_train=i_train, i_val=i_val, i_test=i_test,
-        poses=poses, render_poses=render_poses,
-        images=images, depths=depths,
-        irregular_shape=irregular_shape,
-    )
+    if args.task == 'sr':
+        data_dict = dict(
+            hwf=hwf, hwf_lr=hwf_lr, HW=HW, HW_lr=HW_lr, Ks=Ks, Ks_lr=Ks_lr, near=near, far=far,
+            i_train=i_train, i_val=i_val, i_test=i_test,
+            poses=poses, render_poses=render_poses,
+            images_lr=images_lr, 
+            images=images, depths=depths,
+            irregular_shape=irregular_shape,
+        )
+
+    else:
+        data_dict = dict(
+            hwf=hwf, HW=HW, Ks=Ks, near=near, far=far,
+            i_train=i_train, i_val=i_val, i_test=i_test,
+            poses=poses, render_poses=render_poses,
+            images=images, depths=depths,
+            irregular_shape=irregular_shape,
+        )
+
     return data_dict
 
 

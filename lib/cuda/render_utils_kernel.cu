@@ -447,7 +447,7 @@ __global__ void alpha2weight_cuda_kernel(
     for(i=i_s; i<i_e_max; ++i) {
       T[i] = T_cum;
       weight[i] = T_cum * alpha[i];
-      T_cum *= (1. - alpha[i]);
+      T_cum *= (1. - alpha[i]+1e-10);
       if(T_cum<1e-3) {
         i+=1;
         break;
