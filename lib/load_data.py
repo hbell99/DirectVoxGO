@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from .load_llff import load_llff_data
 from .load_blender import load_blender_data, load_blender_data_lrsr
@@ -181,6 +182,39 @@ def load_data(args):
             irregular_shape=irregular_shape,
         )
 
+    return data_dict
+
+
+def load_everything(args, cfg):
+    '''Load images / poses / camera settings / data split.
+    '''
+    data_dict = load_data(cfg.data)
+
+    # remove useless field
+    if cfg.data.task == 'sr':
+        kept_keys = {
+            'hwf', 'HW', 'Ks', 'near', 'far',
+            'i_train', 'i_val', 'i_test', 'irregular_shape',
+            'poses', 'render_poses', 'images', 'images_lr', 'hwf_lr', 'HW_lr', 'Ks_lr'}
+    else:
+        kept_keys = {
+                'hwf', 'HW', 'Ks', 'near', 'far',
+                'i_train', 'i_val', 'i_test', 'irregular_shape',
+                'poses', 'render_poses', 'images'}
+    for k in list(data_dict.keys()):
+        if k not in kept_keys:
+            data_dict.pop(k)
+
+    # construct data tensor
+    if data_dict['irregular_shape']:
+        data_dict['images'] = [torch.FloatTensor(im, device='cpu') for im in data_dict['images']]
+        if cfg.data.task == 'sr':
+            data_dict['images_lr'] = [torch.FloatTensor(im, device='cpu') for im in data_dict['images_lr']]
+    else:
+        data_dict['images'] = torch.FloatTensor(data_dict['images'], device='cpu')
+        if cfg.data.task == 'sr':
+            data_dict['images_lr'] = torch.FloatTensor(data_dict['images_lr'], device='cpu')
+    data_dict['poses'] = torch.Tensor(data_dict['poses'])
     return data_dict
 
 

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import MLP
+from .mlp import MLP, Mapping
 from .backbone import resnet_extractor
 
 from torch.utils.cpp_extension import load
@@ -57,11 +57,17 @@ class DirectVoxGO(torch.nn.Module):
             'scale': scale, 'no_upsampling': no_upsampling, 'rgb_range': rgb_range,
         }
         self.encoder = make_edsr_baseline(**self.edsr_kwargs)
+        print('initialized encoder networks')
         print(self.encoder)
         if pretrained_state_dict:
             sd = torch.load(pretrained_state_dict)
             self.encoder.load_state_dict(sd)
             print('loaded edsr weights from: ', pretrained_state_dict)
+        
+
+        self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim)
+        print('initialized mapping networks')
+        print(self.map)
         
         self.register_buffer('xyz_min', torch.Tensor(xyz_min))
         self.register_buffer('xyz_max', torch.Tensor(xyz_max))
@@ -113,7 +119,7 @@ class DirectVoxGO(torch.nn.Module):
             if self.rgbnet_full_implicit:
                 self.k0_dim = 0
             else:
-                self.k0_dim = rgbnet_dim
+                self.k0_dim = rgbnet_dim * 3
             # self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
             self.rgbnet_direct = rgbnet_direct
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
@@ -333,6 +339,18 @@ class DirectVoxGO(torch.nn.Module):
         shape = density.shape
         return Raw2Alpha.apply(density.flatten(), self.act_shift, interval).reshape(shape)
 
+    def grid_sampler2D(self, xyz, grids, mode=None, align_corners=True): # , is_k0=False, stepsize=None)
+        '''Wrapper for the 2D interp operation'''
+        xyz = xyz.reshape(1,1,-1,3)
+        ind_norm = ((xyz - self.xyz_min) / (self.xyz_max - self.xyz_min)).flip((-1,)) * 2 - 1
+        mode='bilinear'
+        xy_feat = F.grid_sample(grids['xy'], ind_norm[...,[0, 1]], mode=mode, align_corners=align_corners)[0, :, 0, :].T
+        yz_feat = F.grid_sample(grids['yz'], ind_norm[...,[1, 2]], mode=mode, align_corners=align_corners)[0, :, 0, :].T
+        zx_feat = F.grid_sample(grids['zx'], ind_norm[...,[2, 0]], mode=mode, align_corners=align_corners)[0, :, 0, :].T
+        
+        feat = torch.cat([xy_feat, yz_feat, zx_feat], dim=-1)
+        return feat
+
     def grid_sampler(self, xyz, *grids, mode=None, align_corners=True, is_k0=False, stepsize=None):
         '''Wrapper for the interp operation'''
         shape = xyz.shape[:-1]
@@ -471,17 +489,20 @@ class DirectVoxGO(torch.nn.Module):
         step_id = step_id[mask_inbbox]
         return ray_pts, ray_id, step_id
 
-    def forward(self, rgb_lr, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
+    def forward(self, rgb_lr, pose, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
-
-        feats = self.encoder(rgb_lr)
-        feats = feats[:, :self.rgbnet_dim, :self.world_size[-2], :self.world_size[-1]]
-        feats = feats.unsqueeze(-1).repeat(1, 1, 1, 1, self.world_size[-1])
+        xyz_feats = self.encoder(rgb_lr)
+        feats = {'xy': xyz_feats[[0]], 'yz': xyz_feats[[1]], 'zx': xyz_feats[[2]]}
+        feats = {
+            'xy': self.map(feats['xy'], pose[0]), 
+            'yz': self.map(feats['yz'], pose[1]), 
+            'zx': self.map(feats['zx'], pose[2])
+        }
         # self.k0 = feats
         
         ret_dict = {}
@@ -520,7 +541,6 @@ class DirectVoxGO(torch.nn.Module):
             ray_id = ray_id[mask]
             step_id = step_id[mask]
         
-        # print('alpha:', alpha.min(), alpha.max())
         # query for color
         if not self.rgbnet_full_implicit:
             # lego coarse self.k0 [1, 3, 107, 107, 88]
@@ -528,13 +548,14 @@ class DirectVoxGO(torch.nn.Module):
             inp_k0 = feats # self.k0
             
             if self.implicit_voxel_feat:
+                raise NotImplementedError
                 if self.feat_unfold:
                     inp_k0 = self.unfold_feat(feats) # self.k0
                 k0s, volumes = self.grid_sampler(ray_pts, inp_k0, is_k0=True, stepsize=render_kwargs['stepsize'])
 
             else:
-                k0 = self.grid_sampler(ray_pts, inp_k0)
-        
+                # k0 = self.grid_sampler(ray_pts, inp_k0)
+                k0 = self.grid_sampler2D(ray_pts, feats)
         
         if self.rgbnet is None:
             # no view-depend effect
@@ -553,7 +574,6 @@ class DirectVoxGO(torch.nn.Module):
             viewdirs_emb = viewdirs_emb.flatten(0,-2)[ray_id]
             if not self.implicit_voxel_feat:
                 if self.posbase_pe > 0:
-                    raise NotImplementedError
                     # ray_pts already masked !
                     pos_emb = (ray_pts.unsqueeze(-1) * self.posfreq).flatten(-2)
                     pos_emb = torch.cat([ray_pts, pos_emb.sin(), pos_emb.cos()], -1)
@@ -584,7 +604,6 @@ class DirectVoxGO(torch.nn.Module):
                 index=ray_id,
                 out=torch.zeros([N, 3]),
                 reduce='sum')
-        # TODO
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
             'alphainv_last': alphainv_last,

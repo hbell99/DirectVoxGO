@@ -3,10 +3,26 @@ from copy import deepcopy
 expname = None                    # experiment name
 basedir = './logs/'               # where to store ckpts and logs
 
+'''
+Image backbone edsr configs
+'''
+
+# edsr_model = dict(
+#     name='baseline',
+#     n_resblocks=16, 
+#     n_feats=64, 
+#     res_scale=1,
+#     scale=2, 
+#     no_upsampling=True, 
+#     rgb_range=1
+# )
+
+
 ''' Template of data options
 '''
 data = dict(
-    task='',
+    task='sr',
+    down=4,
     datadir=None,                 # path to dataset root folder
     dataset_type=None,            # blender | nsvf | blendedmvs | tankstemple | deepvoxels | co3d
     inverse_y=False,              # intrinsict mode (to support blendedmvs, nsvf, tankstemple)
@@ -37,6 +53,8 @@ coarse_train = dict(
     N_rand=8192,                  # batch size (number of random rays per optimization step)
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
+    lrate_encoder=1e-3, 
+    lrate_map=1e-3,
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
     pervoxel_lr=True,             # view-count-based lr
@@ -58,6 +76,8 @@ coarse_train = dict(
 fine_train = deepcopy(coarse_train)
 fine_train.update(dict(
     N_iters=20000,
+    lrate_encoder=1e-3,
+    lrate_map=1e-3,
     pervoxel_lr=False,
     ray_sampler='in_maskcache',
     weight_entropy_last=0.001,
@@ -103,6 +123,10 @@ fine_model_and_render.update(dict(
     fast_color_thres=1e-4,
     maskout_near_cam_vox=False,
     world_bound_scale=1.05,
+    
+    use_coarse_geo=False,
+    pretrained_state_dict='/data/hydeng/SR_NeRF/DirectVoxGO/pretrained/edsr-baseline.pth',
 ))
 
 del deepcopy
+

@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 
-expname = 'dvgo_lego_fineposemb'
+expname = 'dvgo_lego_debug'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
@@ -19,9 +19,7 @@ fine_model_and_render = dict(
 )
 
 fine_train = dict(
-    # N_iters=40000,
     lrate_k0=0, 
-    # lrate_decay=8,
-    # pg_scale=[5000, 10000, 20000, 30000],
+    ray_sampler='random',
 )
 
