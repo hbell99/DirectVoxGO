@@ -55,6 +55,7 @@ coarse_train = dict(
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_encoder=1e-3, 
     lrate_map=1e-3,
+    lrate_interp=1e-3,
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
     pervoxel_lr=True,             # view-count-based lr
@@ -80,6 +81,7 @@ fine_train.update(dict(
     lrate_map=1e-3,
     pervoxel_lr=False,
     ray_sampler='in_maskcache',
+    fixed_lr_idx=[],
     weight_entropy_last=0.001,
     weight_rgbper=0.01,
     pg_scale=[1000, 2000, 3000, 4000],
@@ -101,7 +103,7 @@ coarse_model_and_render = dict(
     rgbnet_full_implicit=False,   # let the colors MLP ignore feature voxel grid
     implicit_voxel_feat=False,    # False --> dvgo tri-linear interpolation
     feat_unfold=True, 
-    cell_decode=True,
+    cell_decode=False,
     local_ensemble=True,
     posbase_pe=0,
     rgbnet_direct=True,           # set to False to treat the first 3 dim of feature voxel grid as diffuse rgb
@@ -124,8 +126,11 @@ fine_model_and_render.update(dict(
     maskout_near_cam_vox=False,
     world_bound_scale=1.05,
     
+    no_voxel_feat=False,
+    cat_posemb=True,
     use_coarse_geo=False,
     pretrained_state_dict='/data/hydeng/SR_NeRF/DirectVoxGO/pretrained/edsr-baseline.pth',
+    name=''
 ))
 
 del deepcopy

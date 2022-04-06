@@ -72,3 +72,20 @@ class Mapping(nn.Module):
         out = out.permute(0, 3, 1, 2)
 
         return out
+
+
+class Conv_Mapping(nn.Module):
+    def __init__(self, in_dim, out_dim=12, depth=1, width=64):
+        super().__init__()
+        pass
+    
+    def forward(self, feature, pose):
+        # feature: [1, c, h, w]
+        # pose: [4, 4]
+        # out: [1, out_dim, h, w] 
+        _, c, h, w = feature.shape
+        pose = pose.reshape(1, 16, 1, 1)
+        pose_map = pose.repeat(1, 1, h, w)
+        assert pose_map.shape[-2:] == feature.shape[-2:]
+
+        pass

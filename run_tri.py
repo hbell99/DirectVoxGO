@@ -13,15 +13,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 
 from lib import utils, dvgo, tri_dvgo, dmpigo, ray_utils
-from lib.load_blender import pose_spherical
 from lib.load_data import load_everything
-
-anchor_poses = [
-    pose_spherical(theta=0, phi=90, radius=4),  # xy
-    pose_spherical(theta=90, phi=0, radius=4),  # yz
-    pose_spherical(theta=90, phi=90, radius=4), # zx
-]
-
 
 
 def config_parser():
@@ -66,20 +58,25 @@ def config_parser():
 
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
-                      gt_imgs=None, lr_imgs=None, savedir=None, render_factor=0,
+                      gt_imgs=None, lr_imgs=None, fixed_lr_imgs=None, fixed_lr_poses=None, savedir=None, render_factor=0,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
-    assert len(lr_imgs) == len(render_poses)
-    lr_imgs = torch.stack(lr_imgs, dim=0)
-    j = torch.randint(render_poses.shape[0], [3])
-    rgb_lr = lr_imgs[j]
+    if fixed_lr_imgs:
+        rgb_lr = torch.stack(fixed_lr_imgs, dim=0)
+        pose_lr = fixed_lr_poses
+    else:
+        assert len(lr_imgs) == len(render_poses)
+        lr_imgs = torch.stack(lr_imgs, dim=0)
+        j = torch.randint(render_poses.shape[0], [3])
+        rgb_lr = lr_imgs[j]
+        pose_lr = render_poses[j]
     rgb_lr = rgb_lr.permute(0, 3, 1, 2).to(render_poses.device)
     rgb_lr = (rgb_lr - 0.5) / 0.5
-    pose = render_poses[j]
-    for pp in range(3):
-        pose[pp] = pose[pp]-anchor_poses[pp].to(render_poses.device)
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
+
+    assert rgb_lr.shape[-1] == 200
+    feats = model.encode_feat(rgb_lr, pose_lr)
 
     if render_factor!=0:
         HW = np.copy(HW)
@@ -94,7 +91,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_alex = []
     lpips_vgg = []
 
-    for i, c2w in enumerate(tqdm(render_poses[:10])):
+    for i, c2w in enumerate(tqdm(render_poses)):
 
         H, W = HW[i]
         K = Ks[i]
@@ -111,7 +108,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         # rgb_lr = (rgb_lr - 0.5) / 0.5
         
         render_result_chunks = [
-            {k: v for k, v in model(rgb_lr, pose, ro, rd, vd, **render_kwargs).items() if k in keys}
+            # {k: v for k, v in model(rgb_lr, pose_lr, ro, rd, vd, **render_kwargs).items() if k in keys}
+            {k: v for k, v in model.render(feats, ro, rd, vd, **render_kwargs).items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -331,7 +329,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         if cfg_train.ray_sampler == 'in_maskcache':
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling_sr(
-                rgb_tr_ori_lr=rgb_tr_ori_lr, 
                 rgb_tr_ori=rgb_tr_ori,
                 train_poses=poses[i_train],
                 HW=HW[i_train], Ks=Ks[i_train],
@@ -378,6 +375,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
             model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
 
+        assert model.mask_cache is not None
+
         # progress scaling checkpoint
         if global_step in cfg_train.pg_scale:
             n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
@@ -396,9 +395,12 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # random sample rays
         if cfg_train.ray_sampler == 'in_maskcache':
             i = torch.randint(rgb_lr_tr.shape[0], [1])
-            j = torch.randint(rgb_lr_tr.shape[0], [3])
+            if cfg_train.fixed_lr_idx:
+                j = cfg_train.fixed_lr_idx
+            else:
+                j = torch.randint(rgb_lr_tr.shape[0], [3])
             rgb_lr = rgb_lr_tr[j]
-            pose = poses[i_train][j]
+            pose_lr = poses[i_train][j]
             # assert rgb_tr[0].shape[0] == 640000
             sel_c = torch.randint(rgb_tr[0].shape[0], [cfg_train.N_rand])
             target = rgb_tr[i][sel_c]
@@ -406,11 +408,15 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rays_d = rays_d_tr[i][sel_c]
             viewdirs = viewdirs_tr[i][sel_c]
         elif cfg_train.ray_sampler == 'random':
-            if stage == 'fine':
-                i = torch.randint(rgb_tr.shape[0], [1])
-                j = torch.randint(rgb_tr.shape[0], [3])
+            if stage == 'fine':                
+                if cfg_train.fixed_lr_idx:
+                    i = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
+                    j = cfg_train.fixed_lr_idx
+                else:
+                    i = torch.randint(rgb_tr.shape[0], [1])
+                    j = torch.randint(rgb_lr_tr.shape[0], [3])
                 rgb_lr = rgb_lr_tr[j]
-                pose = poses[i_train][j]
+                pose_lr = poses[i_train][j]
                 sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
                 sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
                 target = rgb_tr[i, sel_r, sel_c]
@@ -443,9 +449,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rgb_lr = rgb_lr.to(device)
             # rgb_lr = transforms.ToTensor()(rgb_lr).to(device)
             rgb_lr = (rgb_lr - 0.5) / 0.5
-            for pp in range(3):
-                pose[pp] = pose[pp]-anchor_poses[pp].to(device)
-            render_result = model(rgb_lr, pose, rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+            render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
 
         # weigths = render_result['weights']
         # rgb_marched = render_result['rgb_marched']
@@ -670,7 +674,9 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train']],
+                fixed_lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
+                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -686,7 +692,9 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_test']],
+                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                fixed_lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
+                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
@@ -702,7 +710,9 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_test']],
+                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                fixed_lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
+                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
