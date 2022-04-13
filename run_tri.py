@@ -328,14 +328,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         rgb_tr_ori_lr = images_lr[i_train]
 
         if cfg_train.ray_sampler == 'in_maskcache':
-            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling_sr(
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling(
                 rgb_tr_ori=rgb_tr_ori,
                 train_poses=poses[i_train],
                 HW=HW[i_train], Ks=Ks[i_train],
                 ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
-                model=model, render_kwargs=render_kwargs
-            )
+                model=model, render_kwargs=render_kwargs)
         elif cfg_train.ray_sampler == 'random':
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays(
                 rgb_tr=rgb_tr_ori,
@@ -350,6 +349,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays_coarse()
     else:
         rgb_lr_tr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays()
+    
+    if cfg_train.ray_sampler == 'in_maskcache':
+        index_generator = ray_utils.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
+        batch_index_sampler = lambda: next(index_generator)
 
     # view-count-based learning rate
     if cfg_train.pervoxel_lr:
@@ -394,7 +397,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         # random sample rays
         if cfg_train.ray_sampler == 'in_maskcache':
-            i = torch.randint(rgb_lr_tr.shape[0], [1])
+            # i = torch.randint(rgb_lr_tr.shape[0], [1])
             if cfg_train.fixed_lr_idx:
                 j = cfg_train.fixed_lr_idx
             else:
@@ -402,18 +405,18 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rgb_lr = rgb_lr_tr[j]
             pose_lr = poses[i_train][j]
             # assert rgb_tr[0].shape[0] == 640000
-            sel_c = torch.randint(rgb_tr[0].shape[0], [cfg_train.N_rand])
-            target = rgb_tr[i][sel_c]
-            rays_o = rays_o_tr[i][sel_c]
-            rays_d = rays_d_tr[i][sel_c]
-            viewdirs = viewdirs_tr[i][sel_c]
+            sel_i = batch_index_sampler()
+            target = rgb_tr[sel_i]
+            rays_o = rays_o_tr[sel_i]
+            rays_d = rays_d_tr[sel_i]
+            viewdirs = viewdirs_tr[sel_i]
         elif cfg_train.ray_sampler == 'random':
             if stage == 'fine':                
                 if cfg_train.fixed_lr_idx:
                     i = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
                     j = cfg_train.fixed_lr_idx
                 else:
-                    i = torch.randint(rgb_tr.shape[0], [1])
+                    i = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
                     j = torch.randint(rgb_lr_tr.shape[0], [3])
                 rgb_lr = rgb_lr_tr[j]
                 pose_lr = poses[i_train][j]
@@ -446,9 +449,15 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         else:
             rgb_lr = rgb_lr.permute(0, 3, 1, 2)
             assert rgb_lr.shape[1] == 3
-            rgb_lr = rgb_lr.to(device)
+            if cfg_train.dynamic_downsampling:
+                down = torch.randint(low=2, high=cfg_train.dynamic_down, size=[1])[0]
+                h, w = rgb_lr.shape[-2:]
+                h, w = h // down, w // down
+                resize = transforms.Resize([h, w])
+                rgb_lr = resize(rgb_lr)
             # rgb_lr = transforms.ToTensor()(rgb_lr).to(device)
             rgb_lr = (rgb_lr - 0.5) / 0.5
+            rgb_lr = rgb_lr.to(device)
             render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
 
         # weigths = render_result['weights']

@@ -154,9 +154,12 @@ def load_blender_data_lrsr(basedir, down=4, testskip=1):
     h, w = H // down, W // down
     focal_lr = focal_sr / float(down)
 
-    imgs_lr = np.zeros((imgs_sr.shape[0], h, w, 4))
-    for i, img in enumerate(imgs_sr):
-        imgs_lr[i] = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+    if down > 1:
+        imgs_lr = np.zeros((imgs_sr.shape[0], h, w, 4))
+        for i, img in enumerate(imgs_sr):
+            imgs_lr[i] = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+    else:
+        imgs_lr = imgs_sr
 
     ret = {
         'imgs_lr': imgs_lr, 

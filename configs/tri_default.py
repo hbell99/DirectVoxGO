@@ -86,6 +86,8 @@ fine_train.update(dict(
     weight_rgbper=0.01,
     pg_scale=[1000, 2000, 3000, 4000],
     skip_zero_grad_fields=['density', 'k0'],
+    dynamic_downsampling=False,
+    dynamic_down=16,
 ))
 
 ''' Template of model and rendering options
@@ -125,12 +127,17 @@ fine_model_and_render.update(dict(
     fast_color_thres=1e-4,
     maskout_near_cam_vox=False,
     world_bound_scale=1.05,
-    
+    global_cell_decode=False,
     no_voxel_feat=False,
     cat_posemb=True,
     use_coarse_geo=False,
     pretrained_state_dict='/data/hydeng/SR_NeRF/DirectVoxGO/pretrained/edsr-baseline.pth',
-    name=''
+    name='',
+
+    interp_width=64,
+    interp_depth=2,
+    map_depth=1,
+    liif=False,
 ))
 
 del deepcopy
