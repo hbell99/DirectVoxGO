@@ -1,6 +1,6 @@
-from turtle import forward
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class MLP(nn.Module):
@@ -39,6 +39,54 @@ class MLP(nn.Module):
         rgb = self.rgb_linear(h)
 
         # density and rgb no activation !!!
+        return rgb, density
+
+
+class NeRF_MLP(nn.Module):
+
+    def __init__(self, D=8, W=256, input_ch=99, input_ch_views=27, skips=[2]):
+        """ 
+        """
+        super(NeRF_MLP, self).__init__()
+        self.D = D
+        self.W = W
+        self.input_ch = input_ch
+        self.input_ch_views = input_ch_views
+        self.skips = skips
+        
+        self.pts_linears = nn.ModuleList(
+            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
+        
+        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
+
+        ### Implementation according to the paper
+        # self.views_linears = nn.ModuleList(
+        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
+        
+        self.feature_linear = nn.Linear(W, W)
+        self.density_linear = nn.Linear(W, 1)
+        self.rgb_linear = nn.Linear(W//2, 3)
+        nn.init.constant_(self.rgb_linear.bias, 0)
+
+    def forward(self, emb, viewemb):
+        h = emb
+        for i, l in enumerate(self.pts_linears):
+            h = self.pts_linears[i](h)
+            h = F.relu(h)
+            if i in self.skips:
+                h = torch.cat([emb, h], -1)
+
+        density = self.density_linear(h)
+        feature = self.feature_linear(h)
+        h = torch.cat([feature, viewemb], -1)
+    
+        for i, l in enumerate(self.views_linears):
+            h = self.views_linears[i](h)
+            h = F.relu(h)
+
+        rgb = self.rgb_linear(h)
+
         return rgb, density
 
 

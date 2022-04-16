@@ -1,7 +1,7 @@
-_base_ = '../tri_default.py'
+_base_ = '../multiscene_default.py'
 
-expname = 'liif_sum_fourier_feat'
-basedir = './logs/tri_dvgo/nerf_synthetic/lego'
+expname = 'vox_sum'
+basedir = './logs/multiscene_dvgo/lego/liif'
 
 data = dict(
     down=1,
@@ -20,48 +20,50 @@ data = dict(
 # )
 
 fine_train = dict(
-    N_iters=100000,
-    N_rand=4096,
+    N_iters=200000,
+    N_rand=2048,
     lrate_k0=0, 
-    lrate_map=1e-4,
+    lrate_map=5e-4,
     lrate_encoder=1e-4,
-    lrate_interp=1e-4,
+    lrate_interp=5e-4,
     lrate_rgbnet=5e-4,
 
-    lrate_decay=200,
-    pg_scale=[5000, 8000, 12000, 15000],
+    lrate_decay=100,
     fixed_lr_idx=[34, 49, 63],
     ray_sampler='random',
+    # pg_scale=[],
 
     dynamic_downsampling=True,
     dynamic_down=16,
-    # skip_zero_grad_fields=[],
 )
 
 fine_model_and_render = dict(
+    # num_voxels=1024000,
+    # num_voxels_base=1024000,
     implicit_voxel_feat=True,
     feat_unfold=False,
     cell_decode=True,
     local_ensemble=True,
-    use_coarse_geo=True,
-    rgbnet_dim=32,
-    name='edsr-baseline' , # 'resnet34', #
+    use_coarse_geo=False,
+    name='edsr-baseline',
     posbase_pe=0,
-
-    rgbnet_depth=3,
 
     global_cell_decode=False,
     no_voxel_feat=False,
     cat_posemb=False,
-
     interp_width=128,
     interp_depth=5,
 
     map_depth=5,
 
-    tri_aggregation='sum',
+    # rgbnet_dim=32,
+    rgbnet_width=256,
+    rgbnet_depth=8,
+    skips=[4],
     liif=True,
 
-    feat_pe=5,
-    feat_fourier=True,
+    # tri_aggregation='sum',
+    
+    use_mipnerf_density=True,
+    # stepsize=1,
 )

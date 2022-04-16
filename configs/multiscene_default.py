@@ -50,7 +50,7 @@ data = dict(
 ''' Template of training options
 '''
 coarse_train = dict(
-    N_iters=5000,                 # number of optimization steps
+    N_iters=0,                 # number of optimization steps
     N_rand=8192,                  # batch size (number of random rays per optimization step)
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
@@ -81,7 +81,7 @@ fine_train.update(dict(
     lrate_encoder=1e-3,
     lrate_map=1e-3,
     pervoxel_lr=False,
-    ray_sampler='in_maskcache',
+    ray_sampler='random',
     fixed_lr_idx=[],
     weight_entropy_last=0.001,
     weight_rgbper=0.01,
@@ -141,8 +141,14 @@ fine_model_and_render.update(dict(
     map_width=64,
     liif=False,
 
+    rgbnet_width=256,
+    rgbnet_depth=8,
+    skips=[4],
+
     tri_aggregation='concat',
 
+    use_mipnerf_density=True,
+    
     feat_pe=0,
     feat_fourier=False,
 ))

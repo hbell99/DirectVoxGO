@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 from torchvision import transforms
 
-from lib import utils, dvgo, tri_dvgo, dmpigo, ray_utils
+from lib import utils, dvgo, multiscene_dvgo, dmpigo, ray_utils
 from lib.load_data import load_everything
 
 
@@ -272,10 +272,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     mask_cache_path=coarse_ckpt_path,
                     **model_kwargs)
             else:
-                model = tri_dvgo.DirectVoxGO(
+                model = multiscene_dvgo.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
-                    mask_cache_path=coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
                 model.maskout_near_cam_vox(poses[i_train,:3,3], near)
@@ -289,7 +288,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             if stage == 'coarse':
                 model_class = dvgo.DirectVoxGO
             else:
-                model_class = tri_dvgo.DirectVoxGO
+                model_class = multiscene_dvgo.DirectVoxGO
         model = utils.load_model(model_class, reload_ckpt_path).to(device)
         optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
         model, optimizer, start = utils.load_checkpoint(
@@ -333,6 +332,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         rgb_tr_ori_lr = images_lr[i_train]
 
         if cfg_train.ray_sampler == 'in_maskcache':
+            raise NotImplementedError
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling(
                 rgb_tr_ori=rgb_tr_ori,
                 train_poses=poses[i_train],
@@ -356,6 +356,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         rgb_lr_tr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays()
     
     if cfg_train.ray_sampler == 'in_maskcache':
+        raise NotImplementedError
         index_generator = ray_utils.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
         batch_index_sampler = lambda: next(index_generator)
 
@@ -379,29 +380,30 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     for global_step in trange(1+start, 1+cfg_train.N_iters):
 
         # renew occupancy grid
-        if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
-            self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
-            model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
+        # if model.mask_cache is not None and (global_step + 500) % 1000 == 0:
+        #     self_alpha = F.max_pool3d(model.activate_density(model.density), kernel_size=3, padding=1, stride=1)[0,0]
+        #     model.mask_cache.mask &= (self_alpha > model.fast_color_thres)
 
-        assert model.mask_cache is not None
+        # assert model.mask_cache is not None
 
         # progress scaling checkpoint
-        if global_step in cfg_train.pg_scale:
-            n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
-            cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
-            if isinstance(model, tri_dvgo.DirectVoxGO):
-                model.scale_volume_grid(cur_voxels)
-            elif isinstance(model, dvgo.DirectVoxGO):
-                model.scale_volume_grid(cur_voxels)
-            elif isinstance(model, dmpigo.DirectMPIGO):
-                model.scale_volume_grid(cur_voxels, model.mpi_depth)
-            else:
-                raise NotImplementedError
-            optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
-            model.density.data.sub_(1)
+        # if global_step in cfg_train.pg_scale:
+        #     n_rest_scales = len(cfg_train.pg_scale)-cfg_train.pg_scale.index(global_step)-1
+        #     cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
+        #     if isinstance(model, multiscene_dvgo.DirectVoxGO):
+        #         model.scale_volume_grid(cur_voxels)
+        #     elif isinstance(model, dvgo.DirectVoxGO):
+        #         model.scale_volume_grid(cur_voxels)
+        #     elif isinstance(model, dmpigo.DirectMPIGO):
+        #         model.scale_volume_grid(cur_voxels, model.mpi_depth)
+        #     else:
+        #         raise NotImplementedError
+        #     optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
+        #     model.density.data.sub_(1)
 
         # random sample rays
         if cfg_train.ray_sampler == 'in_maskcache':
+            raise NotImplementedError
             # i = torch.randint(rgb_lr_tr.shape[0], [1])
             if cfg_train.fixed_lr_idx:
                 j = cfg_train.fixed_lr_idx
@@ -630,7 +632,7 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(tri_dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(multiscene_dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
@@ -641,7 +643,7 @@ if __name__=='__main__':
         print('Export fine visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'fine_last.tar')
-            model = utils.load_model(tri_dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(multiscene_dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_fine_only, alpha=alpha, rgb=rgb)
@@ -662,7 +664,7 @@ if __name__=='__main__':
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
         else:
-            model_class = tri_dvgo.DirectVoxGO
+            model_class = multiscene_dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path).to(device)
         stepsize = cfg.fine_model_and_render.stepsize
         render_viewpoints_kwargs = {
