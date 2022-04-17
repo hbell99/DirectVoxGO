@@ -129,12 +129,11 @@ class DirectVoxGO(torch.nn.Module):
         self.voxel_size_base = ((self.xyz_max - self.xyz_min).prod() / self.num_voxels_base).pow(1/3)
 
         # determine the density bias shift
-        # self.alpha_init = alpha_init
+        self.alpha_init = alpha_init
         # self.act_shift = np.log(1/(1-alpha_init) - 1)
         if use_mipnerf_density:
             self.act_shift = -1 # mipnerf
         else:
-            self.alpha_init = alpha_init
             self.act_shift = np.log(1/(1-alpha_init) - 1)
         print('dvgo: set density bias shift to', self.act_shift)
 
