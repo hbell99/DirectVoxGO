@@ -23,6 +23,7 @@ Image backbone edsr configs
 data = dict(
     task='sr',
     down=4,
+    multiscene=False,
     render_down=4,
     datadir=None,                 # path to dataset root folder
     dataset_type=None,            # blender | nsvf | blendedmvs | tankstemple | deepvoxels | co3d
@@ -57,6 +58,9 @@ coarse_train = dict(
     lrate_encoder=1e-3, 
     lrate_map=1e-3,
     lrate_interp=1e-3,
+    lrate_interp_xy=1e-3,
+    lrate_interp_yz=1e-3,
+    lrate_interp_zx=1e-3,
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
     pervoxel_lr=True,             # view-count-based lr

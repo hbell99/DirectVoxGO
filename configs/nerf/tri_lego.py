@@ -1,6 +1,6 @@
 _base_ = '../tri_default.py'
 
-expname = 'liif_sum_fourier_feat'
+expname = 'liif_sum_sep_interp'
 basedir = './logs/tri_dvgo/nerf_synthetic/lego'
 
 data = dict(
@@ -20,15 +20,18 @@ data = dict(
 # )
 
 fine_train = dict(
-    N_iters=100000,
+    N_iters=200000,
     N_rand=4096,
     lrate_k0=0, 
     lrate_map=1e-4,
     lrate_encoder=1e-4,
-    lrate_interp=1e-4,
+    lrate_interp=0,
+    lrate_interp_xy=5e-4,
+    lrate_interp_yz=5e-4,
+    lrate_interp_zx=5e-4,
     lrate_rgbnet=5e-4,
 
-    lrate_decay=200,
+    lrate_decay=400,
     pg_scale=[5000, 8000, 12000, 15000],
     fixed_lr_idx=[34, 49, 63],
     ray_sampler='random',
@@ -62,6 +65,6 @@ fine_model_and_render = dict(
     tri_aggregation='sum',
     liif=True,
 
-    feat_pe=5,
-    feat_fourier=True,
+    feat_pe=0,
+    feat_fourier=False,
 )

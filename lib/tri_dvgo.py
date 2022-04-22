@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import MLP, Mapping
+from .mlp import Mapping, Interp_MLP
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -164,14 +164,22 @@ class DirectVoxGO(torch.nn.Module):
             if cell_decode:
                 dim0 += 2
             # self.interp = nn.Linear(dim0, rgbnet_dim)
-            self.interp = nn.Sequential(
-                *[nn.Linear(dim0, interp_width), nn.ReLU(inplace=True)],
-                *[
-                    nn.Sequential(nn.Linear(interp_width, interp_width), nn.ReLU(inplace=True))
-                    for _ in range(interp_depth-2)
-                ],
-                nn.Linear(interp_width, rgbnet_dim),
-            )
+            self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            self.interp_yz = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            self.interp_zx = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            self.interp = {
+                'xy': self.interp_xy,
+                'yz': self.interp_yz,
+                'zx': self.interp_yz,
+            }
+            # self.interp = nn.Sequential(
+            #     *[nn.Linear(dim0, interp_width), nn.ReLU(inplace=True)],
+            #     *[
+            #         nn.Sequential(nn.Linear(interp_width, interp_width), nn.ReLU(inplace=True))
+            #         for _ in range(interp_depth-2)
+            #     ],
+            #     nn.Linear(interp_width, rgbnet_dim),
+            # )
             print(self.interp)
             print('dvgo: dim0              ', dim0)
             print('dvgo: feat_unfold       ', self.feat_unfold)
@@ -531,7 +539,7 @@ class DirectVoxGO(torch.nn.Module):
                         rel_cell[:, :, 1] *= feats[s].shape[-1]
                         inp = torch.cat([inp, rel_cell], dim=-1)
                     
-                    pred = self.interp(inp.squeeze(0))
+                    pred = self.interp[s](inp.squeeze(0))
                     preds.append(pred)
 
                     area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
@@ -586,7 +594,7 @@ class DirectVoxGO(torch.nn.Module):
             else:
                 feat = torch.cat([bi_feats[s], pos_emb], dim=-1)
             
-            interp_feat = self.interp(feat)
+            interp_feat = self.interp[s](feat)
             interp_feats.append(interp_feat)
         
         if self.tri_aggregation == 'concat':

@@ -44,7 +44,8 @@ def create_optimizer_or_freeze_model(model, cfg_train, global_step):
             param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
         else:
             print(f'create_optimizer_or_freeze_model: param {k} freeze')
-            param.requires_grad = False
+            if not isinstance(param, dict):
+                param.requires_grad = False
     return MaskedAdam(param_group)
 
 
@@ -63,6 +64,7 @@ def load_model(model_class, ckpt_path):
     ckpt = torch.load(ckpt_path)
     model = model_class(**ckpt['model_kwargs'])
     model.load_state_dict(ckpt['model_state_dict'])
+    print('loaded checkpoints!!!')
     return model
 
 

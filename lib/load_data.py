@@ -44,12 +44,15 @@ def load_data(args):
         print('NEAR FAR', near, far)
 
     elif args.dataset_type == 'blender':
-        if args.task == 'sr':
-            images_lr, images, poses, render_poses, hwf, hwf_lr, i_split = load_blender_data_lrsr(basedir=args.datadir, down=args.down, testskip=args.testskip)
-            print('Loaded sr blender', images.shape, images_lr.shape, render_poses.shape, hwf, hwf_lr, args.datadir)
+        if not args.multiscene:
+            if args.task == 'sr':
+                images_lr, images, poses, render_poses, hwf, hwf_lr, i_split = load_blender_data_lrsr(basedir=args.datadir, down=args.down, testskip=args.testskip)
+                print('Loaded sr blender', images.shape, images_lr.shape, render_poses.shape, hwf, hwf_lr, args.datadir)
+            else:
+                images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip, args.down)
+                print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         else:
-            images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip, args.down)
-            print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+            pass
         i_train, i_val, i_test = i_split
 
         near, far = 2., 6.
