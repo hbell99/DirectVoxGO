@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import os
 
 from .load_llff import load_llff_data
 from .load_blender import load_blender_data, load_blender_data_lrsr
@@ -51,9 +52,55 @@ def load_data(args):
             else:
                 images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip, args.down)
                 print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+            i_train, i_val, i_test = i_split
         else:
-            pass
-        i_train, i_val, i_test = i_split
+            if args.task == 'sr':
+                scenes = os.listdir(args.datadir)
+                scenes = [s for s in scenes if not s.endswith('txt')]
+                print(scenes)
+                images_lr, images, poses, render_poses, hwf, hwf_lr, i_split = [], [], [], [], [], [], []
+                i_train, i_val, i_test = [], [], []
+                for scene in scenes:
+                    _images_lr, _images, _poses, _render_poses, _hwf, _hwf_lr, _i_split = load_blender_data_lrsr(basedir=os.path.join(args.datadir, scene), down=args.down, testskip=args.testskip)
+                    _i_train, _i_val, _i_test = _i_split
+                    images_lr.append(_images_lr)
+                    images.append(_images)
+                    poses.append(_poses)
+                    render_poses.append(_render_poses)
+                    hwf.append(_hwf)
+                    hwf_lr.append(_hwf_lr)
+                    i_train.append(_i_train)
+                    i_val.append(_i_val)
+                    i_test.append(_i_test)
+
+                images_lr = np.stack(images_lr, 0)
+                images = np.stack(images, 0)
+                poses = np.stack(poses, 0)
+                render_poses = torch.stack(render_poses, 0)
+
+                print('Loaded sr blender', images.shape, images_lr.shape, render_poses.shape, hwf, hwf_lr, args.datadir)
+            else:
+                scenes = os.listdir(args.datadir)
+                scenes = [s for s in scenes if not s.endswith('txt')]
+                print(scenes)
+                images_lr, images, poses, render_poses, hwf, hwf_lr, i_split = [], [], [], [], [], [], []
+                i_train, i_val, i_test = [], [], []
+                for scene in scenes:
+                    _images, _poses, _render_poses, _hwf, _i_split = load_blender_data(os.path.join(args.datadir, scene), args.half_res, args.testskip, args.down)
+                    _i_train, _i_val, _i_test = _i_split
+                    images.append(_images)
+                    poses.append(_poses)
+                    render_poses.append(_render_poses)
+                    hwf.append(_hwf)
+                    i_train.append(_i_train)
+                    i_val.append(_i_val)
+                    i_test.append(_i_test)
+                
+                images = torch.stack(images, 0)
+                render_poses = torch.stack(render_poses, 0)
+                print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+                exit()
+        
 
         near, far = 2., 6.
 
@@ -131,6 +178,10 @@ def load_data(args):
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
 
     # Cast intrinsics to right types
+    print(hwf[0])
+    print(hwf[1])
+    print(hwf[-1])
+    exit()
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
