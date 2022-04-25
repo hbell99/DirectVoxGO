@@ -372,11 +372,12 @@ class DirectVoxGO(torch.nn.Module):
             torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[-2]),
             torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[-1]),
         ), -1)
-        nearest_dist = torch.stack([
-            (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
-            for co in cam_o.split(100)  # for memory saving
-        ]).amin(0)
+        
         for scene_id in range(len(self.density)):
+            nearest_dist = torch.stack([
+                (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
+                for co in cam_o[scene_id].split(100)  # for memory saving
+            ]).amin(0)
             self.density[scene_id][nearest_dist[None,None] <= near] = -100
 
     @torch.no_grad()
@@ -607,6 +608,19 @@ class DirectVoxGO(torch.nn.Module):
                 return ret_lst[0]
         else:
             raise NotImplementedError
+
+    def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, scene_id, **render_kwargs):
+        '''Check whether the rays hit the solved coarse geometry or not'''
+        shape = rays_o.shape[:-1]
+        rays_o = rays_o.reshape(-1, 3).contiguous()
+        rays_d = rays_d.reshape(-1, 3).contiguous()
+        stepdist = stepsize * self.voxel_size
+        ray_pts, mask_outbbox, ray_id = render_utils_cuda.sample_pts_on_rays(
+                rays_o, rays_d, self.xyz_min, self.xyz_max, near, far, stepdist)[:3]
+        mask_inbbox = ~mask_outbbox
+        hit = torch.zeros([len(rays_o)], dtype=torch.bool)
+        hit[ray_id[mask_inbbox][self.mask_cache(ray_pts[mask_inbbox], scene_id)]] = 1
+        return hit.reshape(shape)
 
     def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=0, **render_kwargs):
         '''Sample query points on rays.

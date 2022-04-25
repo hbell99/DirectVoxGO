@@ -174,6 +174,47 @@ def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc
 
 
 @torch.no_grad()
+def get_training_rays_in_maskcache_sampling_for_multiscene(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, scene_id, render_kwargs):
+    print('get_training_rays_in_maskcache_sampling: start')
+    assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
+    CHUNK = 64
+    DEVICE = rgb_tr_ori[0].device
+    eps_time = time.time()
+    N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
+    rgb_tr = torch.zeros([N,3], device=DEVICE)
+    rays_o_tr = torch.zeros_like(rgb_tr)
+    rays_d_tr = torch.zeros_like(rgb_tr)
+    viewdirs_tr = torch.zeros_like(rgb_tr)
+    imsz = []
+    top = 0
+    for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
+        assert img.shape[:2] == (H, W)
+        rays_o, rays_d, viewdirs = get_rays_of_a_view(
+                H=H, W=W, K=K, c2w=c2w, ndc=ndc,
+                inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
+        mask = torch.empty(img.shape[:2], device=DEVICE, dtype=torch.bool)
+        for i in range(0, img.shape[0], CHUNK):
+            mask[i:i+CHUNK] = model.hit_coarse_geo(
+                    rays_o=rays_o[i:i+CHUNK], rays_d=rays_d[i:i+CHUNK], scene_id=scene_id, **render_kwargs).to(DEVICE)
+        n = mask.sum()
+        rgb_tr[top:top+n].copy_(img[mask])
+        rays_o_tr[top:top+n].copy_(rays_o[mask].to(DEVICE))
+        rays_d_tr[top:top+n].copy_(rays_d[mask].to(DEVICE))
+        viewdirs_tr[top:top+n].copy_(viewdirs[mask].to(DEVICE))
+        imsz.append(n)
+        top += n
+
+    print('get_training_rays_in_maskcache_sampling: ratio', top / N)
+    rgb_tr = rgb_tr[:top]
+    rays_o_tr = rays_o_tr[:top]
+    rays_d_tr = rays_d_tr[:top]
+    viewdirs_tr = viewdirs_tr[:top]
+    eps_time = time.time() - eps_time
+    print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
+    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
+
+
+@torch.no_grad()
 def get_training_rays_in_maskcache_sampling_sr(
     rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, render_kwargs):
     print('get_training_rays_in_maskcache_sampling: start')

@@ -14,6 +14,8 @@ from torchvision import transforms
 
 from lib import utils, dvgo, tri_dvgo_multiscene, dmpigo, ray_utils
 from lib.load_data import load_everything
+from lib.load_blender import MultisceneBlenderDataset
+
 
 
 def config_parser():
@@ -211,7 +213,7 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres):
     return xyz_min, xyz_max
 
 
-def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, data_dict, stage, coarse_ckpt_path=None):
+def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, multiscene_dataset, stage, coarse_ckpt_path=None):
     if stage == 'fine' and not cfg.fine_model_and_render.use_coarse_geo:
         coarse_ckpt_path = None
     # init
@@ -220,18 +222,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         xyz_shift = (xyz_max - xyz_min) * (cfg_model.world_bound_scale - 1) / 2
         xyz_min -= xyz_shift
         xyz_max += xyz_shift
-    if cfg.data.task == 'sr':
-        HW, HW_lr, Ks, Ks_lr, near, far, i_train, i_val, i_test, poses, render_poses, images, images_lr = [
-            data_dict[k] for k in [
-                'HW', 'HW_lr', 'Ks', 'Ks_lr', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images', 'images_lr'
-            ]
-        ]
-    else:
-        HW, Ks, near, far, i_train, i_val, i_test, poses, render_poses, images = [
-            data_dict[k] for k in [
-                'HW', 'Ks', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images'
-            ]
-        ]
 
     # find whether there is existing checkpoint path
     last_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_last.tar')
@@ -266,6 +256,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             if len(cfg_train.pg_scale) and reload_ckpt_path is None:
                 num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
             if stage == 'coarse':
+                # TODO need a multiscene dvgo model 
                 model = dvgo.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
@@ -278,7 +269,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     mask_cache_path=coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
-                model.maskout_near_cam_vox(poses[i_train,:3,3], near)
+                model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], near)
         model = model.to(device)
         optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     else:
@@ -297,8 +288,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
     # init rendering setup
     render_kwargs = {
-        'near': data_dict['near'],
-        'far': data_dict['far'],
+        'near': multiscene_dataset.near,
+        'far': multiscene_dataset.far,
         'bg': 1 if cfg.data.white_bkgd else 0,
         'stepsize': cfg_model.stepsize,
         'inverse_y': cfg.data.inverse_y,
@@ -307,58 +298,39 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     }
 
     # init batch rays sampler
-    def gather_training_rays():
-        # for scene_id in range(cfg.fine_model_and_render.n_scene):
-        if data_dict['irregular_shape']:
-            rgb_tr_ori = [images[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
-            # rgb_tr_ori_lr = [images_lr[i].to('cpu' if cfg.data.load2gpu_on_the_fly else device) for i in i_train]
-        else:
-            rgb_tr_ori = images[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
-            # rgb_tr_ori_lr = images_lr[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
-        
-        # rgb_tr_ori_lr = images_lr[i_train]
+    def gather_training_rays(rgb_tr_ori, poses, HW, Ks, scene_id): 
+        # single data !!! not for a batch data
+
+        # rgb_tr_ori = rgb_tr_ori.to('cpu' if cfg.data.load2gpu_on_the_fly else device)
 
         if cfg_train.ray_sampler == 'in_maskcache':
-            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling(
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays_in_maskcache_sampling_for_multiscene(
                 rgb_tr_ori=rgb_tr_ori,
-                train_poses=poses[i_train],
-                HW=HW[i_train], Ks=Ks[i_train],
+                train_poses=poses,
+                HW=HW, Ks=Ks,
                 ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
-                model=model, render_kwargs=render_kwargs)
+                model=model, scene_id= scene_id, render_kwargs=render_kwargs)
         elif cfg_train.ray_sampler == 'random':
 
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays(
                 rgb_tr=rgb_tr_ori,
-                train_poses=poses[i_train],
-                HW=HW[i_train], Ks=Ks[i_train], ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                train_poses=poses,
+                HW=HW, Ks=Ks, ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
         else:
             raise NotImplementedError
-        # return rgb_tr_ori_lr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, 
+        
         return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, 
     
-    if stage == 'coarse':
-        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays_coarse()
-    else:
-        # rgb_lr_tr, rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays()
-        rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays()
-    
-    if cfg_train.ray_sampler == 'in_maskcache':
-        index_generator = ray_utils.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
-        batch_index_sampler = lambda: next(index_generator)
-
-    # view-count-based learning rate
-    if cfg_train.pervoxel_lr:
-        def per_voxel_init():
-            cnt = model.voxel_count_views(
-                    rays_o_tr=rays_o_tr, rays_d_tr=rays_d_tr, imsz=imsz, near=near, far=far,
-                    stepsize=cfg_model.stepsize, downrate=cfg_train.pervoxel_lr_downrate,
-                    irregular_shape=data_dict['irregular_shape'])
-            optimizer.set_pervoxel_lr(cnt)
-            with torch.no_grad():
-                model.density[cnt <= 2] = -100
-        per_voxel_init()
+    # initialize dataloader
+    data_loader = torch.utils.data.DataLoader(
+        multiscene_dataset,
+        batch_size=cfg.data.batch_size,
+        shuffle=True,
+        num_workers=8,
+        pin_memory=True,
+    )
 
     # GOGO
     torch.cuda.empty_cache()
@@ -390,98 +362,105 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
             model.density.data.sub_(1)
 
-        # random sample rays
-        if cfg_train.ray_sampler == 'in_maskcache':
-            # i = torch.randint(rgb_lr_tr.shape[0], [1])
-            if cfg_train.fixed_lr_idx:
-                j = cfg_train.fixed_lr_idx
-            else:
-                j = torch.randint(rgb_tr_ori.shape[0], [3])
-            rgb_lr = rgb_lr_tr[j]
-            pose_lr = poses[i_train][j]
-            # assert rgb_tr[0].shape[0] == 640000
-            sel_i = batch_index_sampler()
-            target = rgb_tr[sel_i]
-            rays_o = rays_o_tr[sel_i]
-            rays_d = rays_d_tr[sel_i]
-            viewdirs = viewdirs_tr[sel_i]
-        elif cfg_train.ray_sampler == 'random':
-            if stage == 'fine':                
-                if cfg_train.fixed_lr_idx:
-                    i = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
-                    j = cfg_train.fixed_lr_idx
+        # load data from data loader
+        for (rgb_tr_raw, poses_raw, HW_raw, Ks_raw, rgb_lr_raw, pose_lr_raw, scene_id) in data_loader:
+            all_losses = 0
+            all_psnrs = []
+            for index in range(len(rgb_tr_raw)):
+                # random sample rays
+                if stage == 'coarse':
+                    raise NotImplementedError
                 else:
+                    rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = gather_training_rays(rgb_tr_raw[index], poses_raw[index], HW_raw[index], Ks_raw[index], scene_id[index])
+                
+                if cfg_train.ray_sampler == 'in_maskcache':
+                    index_generator = ray_utils.batch_indices_generator(len(rgb_tr), cfg_train.N_rand)
+                    batch_index_sampler = lambda: next(index_generator)
+
+                    rgb_lr = rgb_lr_raw[index]
+                    pose_lr = pose_lr_raw[index]
+                    sel_i = batch_index_sampler()
+                    target = rgb_tr[sel_i]
+                    rays_o = rays_o_tr[sel_i]
+                    rays_d = rays_d_tr[sel_i]
+                    viewdirs = viewdirs_tr[sel_i]
+                
+                elif cfg_train.ray_sampler == 'random':
+                    rgb_lr = rgb_lr_raw[index]
+                    pose_lr = pose_lr_raw[index]
+
                     i = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
-                    j = torch.randint(rgb_lr_tr.shape[0], [3])
-                rgb_lr = rgb_lr_tr[j]
-                pose_lr = poses[i_train][j]
-                sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
-                sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
-                target = rgb_tr[i, sel_r, sel_c]
-                rays_o = rays_o_tr[i, sel_r, sel_c]
-                rays_d = rays_d_tr[i, sel_r, sel_c]
-                viewdirs = viewdirs_tr[i, sel_r, sel_c]
-            elif stage == 'coarse':
-                sel_b = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
-                sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
-                sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
-                target = rgb_tr[sel_b, sel_r, sel_c]
-                rays_o = rays_o_tr[sel_b, sel_r, sel_c]
-                rays_d = rays_d_tr[sel_b, sel_r, sel_c]
-                viewdirs = viewdirs_tr[sel_b, sel_r, sel_c]
-        else:
-            raise NotImplementedError
 
-        if cfg.data.load2gpu_on_the_fly:
-            target = target.to(device)
-            rays_o = rays_o.to(device)
-            rays_d = rays_d.to(device)
-            viewdirs = viewdirs.to(device)
+                    sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
+                    sel_c = torch.randint(rgb_tr.shape[2], [cfg_train.N_rand])
+                    target = rgb_tr[i, sel_r, sel_c]
+                    rays_o = rays_o_tr[i, sel_r, sel_c]
+                    rays_d = rays_d_tr[i, sel_r, sel_c]
+                    viewdirs = viewdirs_tr[i, sel_r, sel_c]
 
-        # volume rendering
-        if stage == 'coarse':
-            render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
-        else:
-            rgb_lr = rgb_lr.permute(0, 3, 1, 2)
-            assert rgb_lr.shape[1] == 3
-            if cfg_train.dynamic_downsampling:
-                down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
-                # down = torch.randint(low=2, high=cfg_train.dynamic_down, size=[1])[0]
-                h, w = rgb_lr.shape[-2:]
-                h, w = int(h / down), int(w / down)
-                resize = transforms.Resize([h, w])
-                rgb_lr = resize(rgb_lr)
-            # rgb_lr = transforms.ToTensor()(rgb_lr).to(device)
-            rgb_lr = (rgb_lr - 0.5) / 0.5
-            rgb_lr = rgb_lr.to(device)
-            render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, 0, global_step=global_step, **render_kwargs)
+                
+                if cfg.data.load2gpu_on_the_fly:
+                    target = target.to(device)
+                    rays_o = rays_o.to(device)
+                    rays_d = rays_d.to(device)
+                    viewdirs = viewdirs.to(device)
 
-        # weigths = render_result['weights']
-        # rgb_marched = render_result['rgb_marched']
+                # volume rendering
+                if stage == 'coarse':
+                    raise NotImplementedError
+                    # render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+                else:
+                    rgb_lr = rgb_lr.permute(0, 3, 1, 2)
+                    assert rgb_lr.shape[1] == 3
+                    if cfg_train.dynamic_downsampling:
+                        down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
+                        h, w = rgb_lr.shape[-2:]
+                        h, w = int(h / down), int(w / down)
+                        resize = transforms.Resize([h, w])
+                        rgb_lr = resize(rgb_lr)
+                    rgb_lr = (rgb_lr - 0.5) / 0.5
+                    rgb_lr = rgb_lr.to(device)
+                    render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id[index], global_step=global_step, **render_kwargs)
+
+                    loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+                    
+                    psnr = utils.mse2psnr(loss.detach())
+                    all_psnrs.append(psnr.item())
+
+                    if cfg_train.weight_entropy_last > 0:
+                        pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
+                        entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
+                        loss += cfg_train.weight_entropy_last * entropy_last_loss
+                    if cfg_train.weight_rgbper > 0:
+                        rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
+                        rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
+                        loss += cfg_train.weight_rgbper * rgbper_loss
+                    
+                    all_losses += loss
+            
+            # gradient descent step
+            optimizer.zero_grad(set_to_none=True)
+            all_losses.backward()
+            optimizer.step()
+
+            psnr_lst.append(np.mean(all_psnrs))
+        
         # gradient descent step
-        optimizer.zero_grad(set_to_none=True)
-        loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
-        psnr = utils.mse2psnr(loss.detach())
-        if cfg_train.weight_entropy_last > 0:
-            pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
-            entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
-            loss += cfg_train.weight_entropy_last * entropy_last_loss
-        if cfg_train.weight_rgbper > 0:
-            rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
-            rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
-            loss += cfg_train.weight_rgbper * rgbper_loss
-        loss.backward()
+        # optimizer.zero_grad(set_to_none=True)
+        # loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+        # psnr = utils.mse2psnr(loss.detach())
+        # if cfg_train.weight_entropy_last > 0:
+        #     pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
+        #     entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
+        #     loss += cfg_train.weight_entropy_last * entropy_last_loss
+        # if cfg_train.weight_rgbper > 0:
+        #     rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
+        #     rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
+        #     loss += cfg_train.weight_rgbper * rgbper_loss
+        # loss.backward()
 
-        if global_step<cfg_train.tv_before and global_step>cfg_train.tv_after and global_step%cfg_train.tv_every==0:
-            if cfg_train.weight_tv_density>0:
-                model.density_total_variation_add_grad(
-                    cfg_train.weight_tv_density/len(rays_o), global_step<cfg_train.tv_dense_before)
-            if cfg_train.weight_tv_k0>0:
-                model.k0_total_variation_add_grad(
-                    cfg_train.weight_tv_k0/len(rays_o), global_step<cfg_train.tv_dense_before)
-
-        optimizer.step()
-        psnr_lst.append(psnr.item())
+        # optimizer.step()
+        # psnr_lst.append(psnr.item())
 
         # update lr
         decay_steps = cfg_train.lrate_decay * 1000
@@ -496,8 +475,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             eps_time = time.time() - time0
             eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
             tqdm.write(f'scene_rep_reconstruction ({stage}): iter {global_step:6d} / '
-                    #    f'weights ({weigths.min():.4f}, {weigths.max():.4f}) / '
-                    #    f'rgb_marched ({rgb_marched.min():.4f}, {rgb_marched.max():.4f}) / '
                        f'Loss: {loss.item():.9f} / PSNR: {np.mean(psnr_lst):5.2f} / '
                        f'lr: {_lr:.6f} / '
                        f'Eps: {eps_time_str}')
@@ -523,7 +500,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         print(f'scene_rep_reconstruction ({stage}): saved checkpoints at', last_ckpt_path)
 
 
-def train(args, cfg, data_dict):
+def train(args, cfg, multiscene_dataset):
 
     # init
     print('train: start')
@@ -543,7 +520,7 @@ def train(args, cfg, data_dict):
                 args=args, cfg=cfg,
                 cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
                 xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
-                data_dict=data_dict, stage='coarse')
+                multiscene_dataset=multiscene_dataset, stage='coarse')
         eps_coarse = time.time() - eps_coarse
         eps_time_str = f'{eps_coarse//3600:02.0f}:{eps_coarse//60%60:02.0f}:{eps_coarse%60:02.0f}'
         print('train: coarse geometry searching in', eps_time_str)
@@ -567,7 +544,7 @@ def train(args, cfg, data_dict):
             args=args, cfg=cfg,
             cfg_model=cfg.fine_model_and_render, cfg_train=cfg.fine_train,
             xyz_min=xyz_min_fine, xyz_max=xyz_max_fine,
-            data_dict=data_dict, stage='fine',
+            multiscene_dataset=multiscene_dataset, stage='fine',
             coarse_ckpt_path=coarse_ckpt_path)
     eps_fine = time.time() - eps_fine
     eps_time_str = f'{eps_fine//3600:02.0f}:{eps_fine//60%60:02.0f}:{eps_fine%60:02.0f}'
@@ -594,9 +571,12 @@ if __name__=='__main__':
     seed_everything()
 
     # load images / poses / camera settings / data split
-    data_dict = load_everything(args=args, cfg=cfg)
+    # data_dict = load_everything(args=args, cfg=cfg)
+
+    multiscene_dataset = MultisceneBlenderDataset(cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
+    # TODO
     if args.export_bbox_and_cams_only:
         print('Export bbox and cameras...')
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
@@ -640,7 +620,7 @@ if __name__=='__main__':
 
     # train
     if not args.render_only:
-        train(args, cfg, data_dict)
+        train(args, cfg, multiscene_dataset)
 
     # load model for rendring
     if args.render_test or args.render_train or args.render_video:
@@ -659,8 +639,8 @@ if __name__=='__main__':
             'model': model,
             'ndc': cfg.data.ndc,
             'render_kwargs': {
-                'near': data_dict['near'],
-                'far': data_dict['far'],
+                'near': multiscene_dataset.near,
+                'far': multiscene_dataset.far,
                 'bg': 1 if cfg.data.white_bkgd else 0,
                 'stepsize': stepsize,
                 'inverse_y': cfg.data.inverse_y,

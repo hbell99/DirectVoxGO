@@ -23,6 +23,7 @@ Image backbone edsr configs
 data = dict(
     task='sr',
     down=4,
+    batch_size=2, 
     multiscene=True,
     render_down=4,
     datadir=None,                 # path to dataset root folder
@@ -149,7 +150,7 @@ fine_model_and_render.update(dict(
 
     feat_pe=0,
     feat_fourier=False,
-    n_scene=1, 
+    n_scene=8, 
 ))
 
 del deepcopy
