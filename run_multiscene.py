@@ -58,7 +58,7 @@ def config_parser():
 
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
-                      gt_imgs=None, lr_imgs=None, fixed_lr_imgs=None, fixed_lr_poses=None, savedir=None, render_factor=0,
+                      gt_imgs=None, lr_imgs=None, lr_poses=None, fixed_lr_imgs=None, fixed_lr_poses=None, savedir=None, render_factor=0,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
@@ -66,11 +66,11 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         rgb_lr = torch.stack(fixed_lr_imgs, dim=0)
         pose_lr = fixed_lr_poses
     else:
-        assert len(lr_imgs) == len(render_poses)
+        assert len(lr_imgs) == len(lr_poses)
         lr_imgs = torch.stack(lr_imgs, dim=0)
-        j = torch.randint(render_poses.shape[0], [3])
+        j = torch.randint(lr_poses.shape[0], [3])
         rgb_lr = lr_imgs[j]
-        pose_lr = render_poses[j]
+        pose_lr = lr_poses[j]
     rgb_lr = rgb_lr.permute(0, 3, 1, 2)
     h, w = rgb_lr.shape[-2:]
     h, w = h // render_kwargs['render_down'], w // render_kwargs['render_down']
@@ -114,7 +114,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         
         render_result_chunks = [
             # {k: v for k, v in model(rgb_lr, pose_lr, ro, rd, vd, **render_kwargs).items() if k in keys}
-            {k: v for k, v in model.render(feats, ro, rd, vd, **render_kwargs).items() if k in keys}
+            {k: v for k, v in model.render(feats, ro, rd, vd, 0, **render_kwargs).items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -692,7 +692,8 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train']],
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
@@ -712,7 +713,8 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
@@ -726,11 +728,11 @@ if __name__=='__main__':
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, depths = render_viewpoints(
-                render_poses=data_dict['poses'][data_dict['i_test']],
-                HW=data_dict['HW'][data_dict['i_test']],
-                Ks=data_dict['Ks'][data_dict['i_test']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                render_poses=data_dict['render_poses'],
+                HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
@@ -740,4 +742,3 @@ if __name__=='__main__':
         imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     print('Done')
-

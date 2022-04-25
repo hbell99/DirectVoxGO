@@ -60,26 +60,29 @@ def config_parser():
 
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
-                      gt_imgs=None, lr_imgs=None, fixed_lr_imgs=None, fixed_lr_poses=None, savedir=None, render_factor=0,
+                      gt_imgs=None, lr_imgs=None, lr_poses=None, fixed_lr_imgs=None, fixed_lr_poses=None, savedir=None, render_factor=0,
+                      scene_id=None,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if fixed_lr_imgs:
         rgb_lr = torch.stack(fixed_lr_imgs, dim=0)
         pose_lr = fixed_lr_poses
     else:
-        assert len(lr_imgs) == len(render_poses)
+        assert len(lr_imgs) == len(lr_poses)
         lr_imgs = torch.stack(lr_imgs, dim=0)
-        j = torch.randint(render_poses.shape[0], [3])
+        j = torch.randint(lr_poses.shape[0], [3])
         rgb_lr = lr_imgs[j]
-        pose_lr = render_poses[j]
+        pose_lr = lr_poses[j]
     rgb_lr = rgb_lr.permute(0, 3, 1, 2)
     h, w = rgb_lr.shape[-2:]
     h, w = h // render_kwargs['render_down'], w // render_kwargs['render_down']
     resize = transforms.Resize([h, w])
     rgb_lr = resize(rgb_lr)
     rgb_lr = (rgb_lr - 0.5) / 0.5
-    rgb_lr = rgb_lr.to(render_poses.device)
+    rgb_lr = rgb_lr.to(device)
+    pose_lr = pose_lr.to(device)
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
@@ -116,7 +119,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         
         render_result_chunks = [
             # {k: v for k, v in model(rgb_lr, pose_lr, ro, rd, vd, **render_kwargs).items() if k in keys}
-            {k: v for k, v in model.render(feats, ro, rd, vd, 0, **render_kwargs).items() if k in keys}
+            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs).items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -137,9 +140,9 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
             if eval_ssim:
                 ssims.append(utils.rgb_ssim(rgb, gt_imgs[i], max_val=1))
             if eval_lpips_alex:
-                lpips_alex.append(utils.rgb_lpips(rgb, gt_imgs[i], net_name='alex', device=c2w.device))
+                lpips_alex.append(utils.rgb_lpips(rgb, gt_imgs[i], net_name='alex', device=device))
             if eval_lpips_vgg:
-                lpips_vgg.append(utils.rgb_lpips(rgb, gt_imgs[i], net_name='vgg', device=c2w.device))
+                lpips_vgg.append(utils.rgb_lpips(rgb, gt_imgs[i], net_name='vgg', device=device))
 
     if len(psnrs):
         print('Testing psnr', np.mean(psnrs), '(avg)')
@@ -606,7 +609,7 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(tri_dvgo_multiscene.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
@@ -656,7 +659,11 @@ if __name__=='__main__':
                 'render_down': cfg.data.render_down,
             },
         }
-
+    
+    cfg.data.datadir = os.path.join(cfg.data.datadir, 'lego')
+    scene_id = multiscene_dataset.scene2index['lego']
+    data_dict = load_everything(args=args, cfg=cfg)
+    
     # render trainset and eval
     if args.render_train:
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
@@ -666,10 +673,12 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_train']],
                 Ks=data_dict['Ks'][data_dict['i_train']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_train']],
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
+                scene_id=scene_id,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
@@ -686,10 +695,12 @@ if __name__=='__main__':
                 HW=data_dict['HW'][data_dict['i_test']],
                 Ks=data_dict['Ks'][data_dict['i_test']],
                 gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
+                scene_id=scene_id,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
@@ -700,14 +711,15 @@ if __name__=='__main__':
         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, depths = render_viewpoints(
-                render_poses=data_dict['poses'][data_dict['i_test']],
-                HW=data_dict['HW'][data_dict['i_test']],
-                Ks=data_dict['Ks'][data_dict['i_test']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images_lr'][i] for i in data_dict['i_test']],
+                render_poses=data_dict['render_poses'],
+                HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                lr_poses=data_dict['poses'][data_dict['i_train']],
                 fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
                 fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
                 savedir=testsavedir,
+                scene_id=scene_id,
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
         imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
