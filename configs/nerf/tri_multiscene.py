@@ -4,7 +4,7 @@ expname = 'debug' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
-    down=4,
+    down=1,
     task='sr',
     datadir='/home/hydeng/data/NeRF_data/nerf_synthetic/',
     dataset_type='blender',
@@ -22,8 +22,8 @@ coarse_train = dict(
 # )
 
 fine_train = dict(
-    N_iters=500,
-    N_rand=8192,
+    N_iters=200000,
+    N_rand=6144,
     lrate_k0=0, 
     lrate_map=1e-4,
     lrate_encoder=1e-4,
@@ -34,7 +34,7 @@ fine_train = dict(
     lrate_rgbnet=5e-4,
 
     lrate_decay=400,
-    pg_scale=[100, 200, 300, 400],
+    pg_scale=[5000, 8000, 12000, 15000],
     fixed_lr_idx=[], #[34, 49, 63],
     ray_sampler='random',
 
@@ -69,6 +69,6 @@ fine_model_and_render = dict(
 
     feat_pe=0,
     feat_fourier=False,
-
+    n_scene=8, 
     pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
 )

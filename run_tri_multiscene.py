@@ -51,9 +51,9 @@ def config_parser():
     parser.add_argument("--eval_lpips_vgg", action='store_true')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=50,
+    parser.add_argument("--i_print",   type=int, default=100,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_weights", type=int, default=50000,
+    parser.add_argument("--i_weights", type=int, default=10000,
                         help='frequency of weight ckpt saving')
     return parser
 
@@ -196,6 +196,7 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, near, far, **kwargs):
     print('compute_bbox_by_cam_frustrm: finish')
     return xyz_min, xyz_max
 
+# TODO
 @torch.no_grad()
 def compute_bbox_by_coarse_geo(model_class, model_path, thres):
     print('compute_bbox_by_coarse_geo: start')
@@ -335,7 +336,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         multiscene_dataset,
         batch_size=cfg.data.batch_size,
         shuffle=True,
-        num_workers=4, # 8
+        num_workers=2, # 8
         # pin_memory=True,
         # generator=torch.Generator(device=device)
     )
@@ -374,7 +375,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         for (rgb_tr_raw, poses_raw, HW_raw, Ks_raw, rgb_lr_raw, pose_lr_raw, scene_id) in data_loader:
             all_losses = 0
             all_psnrs = []
-            for index in range(len(rgb_tr_raw)):
+            for index in range(cfg.data.batch_size):
                 # random sample rays
                 if stage == 'coarse':
                     raise NotImplementedError

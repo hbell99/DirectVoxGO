@@ -61,7 +61,7 @@ class DirectVoxGO(torch.nn.Module):
                  implicit_voxel_feat=False, feat_unfold=False, local_ensemble=True, cell_decode=True,
                  cat_posemb=False,
                  
-                 n_scene=1,
+                 n_scene=8,
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
@@ -138,7 +138,7 @@ class DirectVoxGO(torch.nn.Module):
 
         # init density voxel grid
         self.density = torch.nn.Parameter(torch.zeros([n_scene, 1, 1, *self.world_size]))
-
+        self.n_scene = n_scene
         # init color representation
         self.rgbnet_kwargs = {
             'rgbnet_dim': rgbnet_dim, 'rgbnet_direct': rgbnet_direct,
@@ -298,6 +298,7 @@ class DirectVoxGO(torch.nn.Module):
             'global_cell_decode': self.global_cell_decode,
             'liif': self.liif,
             'tri_aggregation': self.tri_aggregation,
+            'n_scene': self.n_scene,
             **self.rgbnet_kwargs,
             **self.encoder_kwargs,
         }
