@@ -51,7 +51,7 @@ def config_parser():
     parser.add_argument("--eval_lpips_vgg", action='store_true')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=500,
+    parser.add_argument("--i_print",   type=int, default=50,
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_weights", type=int, default=50000,
                         help='frequency of weight ckpt saving')
@@ -169,21 +169,25 @@ def seed_everything():
     random.seed(args.seed)
 
 
-def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, i_train, near, far, **kwargs):
+def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, near, far, **kwargs):
     print('compute_bbox_by_cam_frustrm: start')
-    xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
+    # xyz_min = torch.Tensor([np.inf, np.inf, np.inf])
+    xyz_min = torch.cuda.FloatTensor([np.inf, np.inf, np.inf])
     xyz_max = -xyz_min
-    for (H, W), K, c2w in zip(HW[i_train], Ks[i_train], poses[i_train]):
-        rays_o, rays_d, viewdirs = ray_utils.get_rays_of_a_view(
-                H=H, W=W, K=K, c2w=c2w,
-                ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
-                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        if cfg.data.ndc:
-            pts_nf = torch.stack([rays_o+rays_d*near, rays_o+rays_d*far])
-        else:
-            pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
-        xyz_min = torch.minimum(xyz_min, pts_nf.amin((0,1,2)))
-        xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
+    for scene_id in range(len(HW)):
+        for (H, W), K, c2w in zip(HW[scene_id], Ks[scene_id], poses[scene_id]):
+            # c2w = torch.Tensor(c2w)
+            c2w = torch.cuda.FloatTensor(c2w)
+            rays_o, rays_d, viewdirs = ray_utils.get_rays_of_a_view(
+                    H=H, W=W, K=K, c2w=c2w,
+                    ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                    flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+            if cfg.data.ndc:
+                pts_nf = torch.stack([rays_o+rays_d*near, rays_o+rays_d*far])
+            else:
+                pts_nf = torch.stack([rays_o+viewdirs*near, rays_o+viewdirs*far])
+            xyz_min = torch.minimum(xyz_min, pts_nf.amin((0,1,2)))
+            xyz_max = torch.maximum(xyz_max, pts_nf.amax((0,1,2)))
     print('compute_bbox_by_cam_frustrm: xyz_min', xyz_min)
     print('compute_bbox_by_cam_frustrm: xyz_max', xyz_max)
     print('compute_bbox_by_cam_frustrm: finish')
@@ -328,8 +332,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         multiscene_dataset,
         batch_size=cfg.data.batch_size,
         shuffle=True,
-        num_workers=8,
-        pin_memory=True,
+        num_workers=4, # 8
+        # pin_memory=True,
+        # generator=torch.Generator(device=device)
     )
 
     # GOGO
@@ -398,12 +403,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     rays_d = rays_d_tr[i, sel_r, sel_c]
                     viewdirs = viewdirs_tr[i, sel_r, sel_c]
 
-                
-                if cfg.data.load2gpu_on_the_fly:
-                    target = target.to(device)
-                    rays_o = rays_o.to(device)
-                    rays_d = rays_d.to(device)
-                    viewdirs = viewdirs.to(device)
+                target = target.to(device)
+                rays_o = rays_o.to(device)
+                rays_d = rays_d.to(device)
+                viewdirs = viewdirs.to(device)
 
                 # volume rendering
                 if stage == 'coarse':
@@ -419,7 +422,9 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                         resize = transforms.Resize([h, w])
                         rgb_lr = resize(rgb_lr)
                     rgb_lr = (rgb_lr - 0.5) / 0.5
+                    
                     rgb_lr = rgb_lr.to(device)
+                    pose_lr = pose_lr.to(device)
                     render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id[index], global_step=global_step, **render_kwargs)
 
                     loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
@@ -514,7 +519,7 @@ def train(args, cfg, multiscene_dataset):
 
     # coarse geometry searching
     eps_coarse = time.time()
-    xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
+    xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, HW=multiscene_dataset.all_HW, Ks=multiscene_dataset.all_Ks, poses=multiscene_dataset.all_poses, near=multiscene_dataset.near, far=multiscene_dataset.far)
     if cfg.coarse_train.N_iters > 0:
         scene_rep_reconstruction(
                 args=args, cfg=cfg,
@@ -563,8 +568,9 @@ if __name__=='__main__':
     cfg = mmcv.Config.fromfile(args.config)
 
     # init enviroment
+    # torch.multiprocessing.set_start_method('spawn')
     if torch.cuda.is_available():
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        # torch.set_default_tensor_type('torch.cuda.FloatTensor')
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')

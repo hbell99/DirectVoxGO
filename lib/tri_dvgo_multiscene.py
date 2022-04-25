@@ -82,7 +82,7 @@ class DirectVoxGO(torch.nn.Module):
             }
             self.encoder = make_edsr_baseline(**self.encoder_kwargs)
             print('initialized encoder networks')
-            print(self.encoder)
+            # print(self.encoder)
             if pretrained_state_dict:
                 sd = torch.load(pretrained_state_dict)
                 self.encoder.load_state_dict(sd)
@@ -94,7 +94,7 @@ class DirectVoxGO(torch.nn.Module):
                 'name': 'resnet34'
             }
             print('initialized encoder networks')
-            print(self.encoder)
+            # print(self.encoder)
         
         else:
             raise NotImplementedError
@@ -103,8 +103,8 @@ class DirectVoxGO(torch.nn.Module):
         print('initialized mapping networks')
         print(self.map)
         
-        self.register_buffer('xyz_min', torch.Tensor(xyz_min))
-        self.register_buffer('xyz_max', torch.Tensor(xyz_max))
+        self.register_buffer('xyz_min', torch.cuda.FloatTensor(xyz_min))
+        self.register_buffer('xyz_max', torch.cuda.FloatTensor(xyz_max))
         self.fast_color_thres = fast_color_thres
         self.posbase_pe = posbase_pe
 
@@ -323,9 +323,9 @@ class DirectVoxGO(torch.nn.Module):
         if axis == 'xyz':
             self_grid_xyz = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3]),
-                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2]),
-                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1]),
+                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1], device=self.xyz_min.device),
                 ), 
             dim=-1)
 
@@ -335,8 +335,8 @@ class DirectVoxGO(torch.nn.Module):
         elif axis == 'xy':
             self_grid_xy = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3]),
-                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2]),
+                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2], device=self.xyz_min.device),
                 ), 
             dim=-1)
             self_grid_xy = ((self_grid_xy - self.xyz_min[[0, 1]]) / (self.xyz_max[[0, 1]] - self.xyz_min[[0, 1]])).flip((-1,)) * 2 - 1
@@ -345,8 +345,8 @@ class DirectVoxGO(torch.nn.Module):
         elif axis == 'yz':
             self_grid_yz = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2]),
-                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1]),
+                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1], device=self.xyz_min.device),
                 ), 
             dim=-1)
 
@@ -356,8 +356,8 @@ class DirectVoxGO(torch.nn.Module):
         elif axis == 'zx':
             self_grid_zx = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1]),
-                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3]),
+                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3], device=self.xyz_min.device),
                 ), 
             dim=-1)
 
@@ -486,7 +486,7 @@ class DirectVoxGO(torch.nn.Module):
         rx = 2 / self.world_size[-3] / 2
         ry = 2 / self.world_size[-2] / 2
         rz = 2 / self.world_size[-1] / 2
-        r = torch.Tensor([rx, ry, rz])
+        r = torch.cuda.FloatTensor([rx, ry, rz])
 
         splits = {'xy': [0, 1], 'yz': [1, 2], 'zx': [2, 0]}
         interp_feats = []
@@ -769,7 +769,7 @@ class DirectVoxGO(torch.nn.Module):
         rgb_marched = segment_coo(
                 src=(weights.unsqueeze(-1) * rgb),
                 index=ray_id,
-                out=torch.zeros([N, 3]),
+                out=torch.zeros([N, 3], device=weights.device),
                 reduce='sum')
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
@@ -786,7 +786,7 @@ class DirectVoxGO(torch.nn.Module):
                 depth = segment_coo(
                         src=(weights * step_id),  # step related to world size
                         index=ray_id,
-                        out=torch.zeros([N]),
+                        out=torch.zeros([N], device=weights.device),
                         reduce='sum')
             ret_dict.update({'depth': depth})
         return ret_dict
@@ -809,16 +809,16 @@ class MaskCache(nn.Module):
                 _mask = (alpha >= self.mask_cache_thres).squeeze(0).squeeze(0)
                 mask.append(_mask)
             mask = torch.stack(mask, dim=0)
-            xyz_min = torch.Tensor(st['model_kwargs']['xyz_min'])
-            xyz_max = torch.Tensor(st['model_kwargs']['xyz_max'])
+            xyz_min = torch.cuda.FloatTensor(st['model_kwargs']['xyz_min'])
+            xyz_max = torch.cuda.FloatTensor(st['model_kwargs']['xyz_max'])
         else:
             mask = mask.bool()
-            xyz_min = torch.Tensor(xyz_min)
-            xyz_max = torch.Tensor(xyz_max)
+            xyz_min = torch.cuda.FloatTensor(xyz_min)
+            xyz_max = torch.cuda.FloatTensor(xyz_max)
 
         self.register_buffer('mask', mask)
         xyz_len = xyz_max - xyz_min
-        self.register_buffer('xyz2ijk_scale', (torch.Tensor(list(mask[0].shape)) - 1) / xyz_len)
+        self.register_buffer('xyz2ijk_scale', (torch.cuda.FloatTensor(list(mask[0].shape)) - 1) / xyz_len)
         self.register_buffer('xyz2ijk_shift', -xyz_min * self.xyz2ijk_scale)
 
     @torch.no_grad()

@@ -77,7 +77,7 @@ def get_rays_of_a_view(H, W, K, c2w, ndc, inverse_y, flip_x, flip_y, mode='cente
 
 @torch.no_grad()
 def get_training_rays(rgb_tr, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y):
-    print('get_training_rays: start')
+    # print('get_training_rays: start')
     assert len(np.unique(HW, axis=0)) == 1
     assert len(np.unique(Ks.reshape(len(Ks),-1), axis=0)) == 1
     assert len(rgb_tr) == len(train_poses) and len(rgb_tr) == len(Ks) and len(rgb_tr) == len(HW)
@@ -96,7 +96,7 @@ def get_training_rays(rgb_tr, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_
         viewdirs_tr[i].copy_(viewdirs.to(rgb_tr.device))
         del rays_o, rays_d, viewdirs
     eps_time = time.time() - eps_time
-    print('get_training_rays: finish (eps time:', eps_time, 'sec)')
+    # print('get_training_rays: finish (eps time:', eps_time, 'sec)')
     return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
 
 
@@ -175,7 +175,7 @@ def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc
 
 @torch.no_grad()
 def get_training_rays_in_maskcache_sampling_for_multiscene(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, scene_id, render_kwargs):
-    print('get_training_rays_in_maskcache_sampling: start')
+    # print('get_training_rays_in_maskcache_sampling: start')
     assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
     CHUNK = 64
     DEVICE = rgb_tr_ori[0].device
@@ -210,7 +210,7 @@ def get_training_rays_in_maskcache_sampling_for_multiscene(rgb_tr_ori, train_pos
     rays_d_tr = rays_d_tr[:top]
     viewdirs_tr = viewdirs_tr[:top]
     eps_time = time.time() - eps_time
-    print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
+    # print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
     return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
 
 

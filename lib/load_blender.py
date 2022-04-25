@@ -294,15 +294,31 @@ class MultisceneBlenderDataset(Dataset):
         #     [0, 0, 1]
         # ])
 
-        all_poses = []
+        all_poses, all_Ks, all_HW = [], [], []
         for s in self.scenes:
             poses = []
             for frame in self.meta[s]['frames']:
                 poses.append(np.array(frame['transform_matrix']))
             poses = np.array(poses).astype(np.float32)
+            focal = .5 * self.W / np.tan(.5 * self.meta[s]['camera_angle_x'])
+            K = np.array([
+                [focal, 0, 0.5*self.W],
+                [0, focal, 0.5*self.H],
+                [0, 0, 1]
+            ])
+            if len(K.shape) == 2:
+                Ks = K[None].repeat(len(poses), axis=0)
+            else:
+                Ks = K
             all_poses.append(poses)
+            all_Ks.append(Ks)
+            all_HW.append(np.array([[self.H, self.W] for i in range(len(self.meta[s]['frames']))]))
         
         self.all_poses = np.stack(all_poses, 0) # [n_scenes, n_views, 4, 4]
+        self.all_Ks = np.stack(all_Ks, 0)
+        self.all_HW = np.stack(all_HW, 0)
+
+        # self.all_poses = torch.FloatTensor(self.all_poses)
 
     def read_meta(self, basedir, split='train'):
         metas = {}
@@ -338,7 +354,7 @@ class MultisceneBlenderDataset(Dataset):
         s = self.index2scene[scene_index]
         
         frame = self.meta[s]['frames'][frame_index]
-        fname = os.path.join(self.basedir, frame['file_path'] + '.png')
+        fname = os.path.join(self.basedir, s, frame['file_path'] + '.png')
         image = imageio.imread(fname)
         H, W = image.shape[:2]
         assert H == self.H
@@ -350,14 +366,7 @@ class MultisceneBlenderDataset(Dataset):
             image = image[...,:3]*image[...,-1:]
         pose = self.all_poses[scene_index][frame_index]
 
-        camera_angle_x = self.meta[s]['camera_angle_x']
-        focal = .5 * self.W / np.tan(.5 * camera_angle_x)
-
-        K = np.array([
-            [focal, 0, 0.5*self.W],
-            [0, focal, 0.5*self.H],
-            [0, 0, 1]
-        ])
+        K = self.all_poses[scene_index][0]
 
         return image, pose, K
 
@@ -379,11 +388,12 @@ class MultisceneBlenderDataset(Dataset):
         
         HW = np.array([im.shape[:2] for im in image])
 
-        image = torch.FloatTensor(image, device='cpu')
-        poses = torch.Tensor(poses)
-        input_images = torch.FloatTensor(input_images, device='cpu')
-        input_poses = torch.Tensor(input_poses, device='cpu')
+        # image = torch.FloatTensor(image, device='cpu')
+        # poses = torch.FloatTensor(poses, device='cpu')
+        # input_images = torch.FloatTensor(input_images, device='cpu')
+        # input_poses = torch.FloatTensor(input_poses, device='cpu')
 
         scene_id = index
 
         return image, pose, HW, Ks, input_images, imput_poses, scene_id 
+

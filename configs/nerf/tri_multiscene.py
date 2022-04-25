@@ -1,7 +1,7 @@
 _base_ = '../tri_multiscene_default.py'
 
 expname = 'debug' #'rnd_liif_sum_sep_interp'
-basedir = './logs/tri_dvgo/nerf_synthetic/multiscene'
+basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
     down=4,
@@ -10,6 +10,7 @@ data = dict(
     dataset_type='blender',
     white_bkgd=True,
     render_down=4,
+    batch_size=1, 
 )
 
 coarse_train = dict(
@@ -22,7 +23,7 @@ coarse_train = dict(
 
 fine_train = dict(
     N_iters=500,
-    N_rand=4096,
+    N_rand=8192,
     lrate_k0=0, 
     lrate_map=1e-4,
     lrate_encoder=1e-4,
