@@ -467,16 +467,10 @@ class MultisceneBlenderDataset_v2(Dataset):
             all_Ks.append(Ks)
             all_HW.append(np.array([[self.H, self.W] for i in range(len(self.meta[s]['frames']))]))
         
-        self.all_imgs = np.stack(all_imgs, 0)
-        self.all_poses = np.stack(all_poses, 0) # [n_scenes, n_views, 4, 4]
+        self.all_imgs = torch.Tensor(np.stack(all_imgs, 0))
+        self.all_poses = torch.Tensor(np.stack(all_poses, 0)) # [n_scenes, n_views, 4, 4]
         self.all_Ks = np.stack(all_Ks, 0)
         self.all_HW = np.stack(all_HW, 0)
-
-        print(self.all_imgs.shape)
-        print(self.all_poses.shape)
-        print(self.all_Ks.shape)
-        print(self.all_HW.shape)
-        exit()
 
 
     def read_meta(self, basedir, split='train'):
