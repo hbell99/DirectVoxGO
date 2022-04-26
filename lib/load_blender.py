@@ -431,12 +431,26 @@ class MultisceneBlenderDataset_v2(Dataset):
         #     [0, 0, 1]
         # ])
 
-        all_poses, all_Ks, all_HW = [], [], []
+        all_imgs, all_poses, all_Ks, all_HW = [], [], [], []
         for s in self.scenes:
             poses = []
+            imgs = []
             for frame in self.meta[s]['frames']:
+                fname = os.path.join(basedir, s, frame['file_path'] + '.png')
+                image = imageio.imread(fname)
+                H, W = image.shape[:2]
+                assert H == self.H
+                assert W == self.W
+                image = (np.array(image) / 255.).astype(np.float32)
+                if self.white_bkgd:
+                    image = image[...,:3]*image[...,-1:] + (1.-image[...,-1:])
+                else:
+                    image = image[...,:3]*image[...,-1:]
+                imgs.append(image)
                 poses.append(np.array(frame['transform_matrix']))
             poses = np.array(poses).astype(np.float32)
+            imgs = np.stack(imgs, 0)
+
             focal = .5 * self.W / np.tan(.5 * self.meta[s]['camera_angle_x'])
             K = np.array([
                 [focal, 0, 0.5*self.W],
@@ -447,15 +461,23 @@ class MultisceneBlenderDataset_v2(Dataset):
                 Ks = K[None].repeat(len(poses), axis=0)
             else:
                 Ks = K
+            
+            all_imgs.append(imgs)
             all_poses.append(poses)
             all_Ks.append(Ks)
             all_HW.append(np.array([[self.H, self.W] for i in range(len(self.meta[s]['frames']))]))
         
+        self.all_imgs = np.stack(all_imgs, 0)
         self.all_poses = np.stack(all_poses, 0) # [n_scenes, n_views, 4, 4]
         self.all_Ks = np.stack(all_Ks, 0)
         self.all_HW = np.stack(all_HW, 0)
 
-        # self.all_poses = torch.FloatTensor(self.all_poses)
+        print(self.all_imgs.shape)
+        print(self.all_poses.shape)
+        print(self.all_Ks.shape)
+        print(self.all_HW.shape)
+        exit()
+
 
     def read_meta(self, basedir, split='train'):
         metas = {}
@@ -477,44 +499,26 @@ class MultisceneBlenderDataset_v2(Dataset):
         else:
             idxs = np.random.permutation(100)[:3] # np.random.permutation(len(self.meta[s]['frames']))[:3]
         
-        images, poses = [], []
-        for index in idxs:
-            image, pose, _ = self.form_data(scene_index, index)
-            images.append(image)
-            poses.append(pose)
-        
-        images = np.stack(images, 0)
-        poses = np.stack(poses, 0)
+        images = self.all_imgs[scene_index][idxs]
+        poses = self.all_poses[scene_index][idxs]
         return images, poses
     
-    def form_data(self, scene_index, frame_index):
-        s = self.index2scene[scene_index]
-        
-        frame = self.meta[s]['frames'][frame_index]
-        fname = os.path.join(self.basedir, s, frame['file_path'] + '.png')
-        image = imageio.imread(fname)
-        H, W = image.shape[:2]
-        assert H == self.H
-        assert W == self.W
-        image = (np.array(image) / 255.).astype(np.float32)
-        if self.white_bkgd:
-            image = image[...,:3]*image[...,-1:] + (1.-image[...,-1:])
-        else:
-            image = image[...,:3]*image[...,-1:]
-        pose = self.all_poses[scene_index][frame_index]
-
-        K = self.all_Ks[scene_index][0]
-
-        return image, pose, K
-
     def __len__(self):
         return len(self.meta) # n_scenes
 
     def __getitem__(self, index):
         # s = self.index2scene[index]
+        # single image
         random_index = np.random.randint(100) # len(self.meta[s]['frames']
-        image, pose, K = self.form_data(scene_index=index, frame_index=random_index) # [1, H, W, 3], # [1, 4, 4]
+        image = self.all_imgs[index, random_index]
+        pose = self.all_poses[index, random_index]
+        K = self.all_Ks[index, random_index]
         image, pose = image[None], pose[None]
+
+        # # all images
+        # image = self.all_imgs[index]
+        # pose = self.all_poses[index]
+        # K = self.all_Ks[index]
 
         input_images, imput_poses = self.get_input_views(scene_index=index, fixed_idx=self.fixed_idx) # [3, H, W, 3], # [3, 4, 4]
 
@@ -533,3 +537,8 @@ class MultisceneBlenderDataset_v2(Dataset):
         scene_id = index
 
         return image, pose, HW, Ks, input_images, imput_poses, scene_id 
+
+dataset_dict = {
+    'MultisceneBlenderDataset_v2': MultisceneBlenderDataset_v2, 
+    'MultisceneBlenderDataset': MultisceneBlenderDataset
+}

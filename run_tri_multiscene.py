@@ -14,7 +14,7 @@ from torchvision import transforms
 
 from lib import utils, dvgo, tri_dvgo_multiscene, dmpigo, ray_utils
 from lib.load_data import load_everything
-from lib.load_blender import MultisceneBlenderDataset
+from lib.load_blender import dataset_dict
 
 
 
@@ -583,7 +583,7 @@ if __name__=='__main__':
     # load images / poses / camera settings / data split
     # data_dict = load_everything(args=args, cfg=cfg)
 
-    multiscene_dataset = MultisceneBlenderDataset(cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx)
+    multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
     # TODO

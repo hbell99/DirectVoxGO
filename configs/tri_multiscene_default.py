@@ -47,6 +47,7 @@ data = dict(
     height=None,                  # enforce image height
     llffhold=8,                   # testsplit
     load_depths=False,            # load depth
+    dataset=''
 )
 
 ''' Template of training options
