@@ -101,7 +101,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_alex = []
     lpips_vgg = []
 
-    for i, c2w in enumerate(tqdm(render_poses[:10])):
+    for i, c2w in enumerate(tqdm(render_poses)):
 
         H, W = HW[i]
         K = Ks[i]
@@ -653,8 +653,8 @@ if __name__=='__main__':
             },
         }
     
-    cfg.data.datadir = os.path.join(cfg.data.datadir, 'lego')
-    scene_id = multiscene_dataset.scene2index['lego']
+    cfg.data.datadir = os.path.join(cfg.data.datadir, 'mic')
+    scene_id = multiscene_dataset.scene2index['mic']
     data_dict = load_everything(args=args, cfg=cfg)
     
     # render trainset and eval
@@ -681,7 +681,7 @@ if __name__=='__main__':
     if args.render_test:
         render_down = render_viewpoints_kwargs['render_kwargs']['render_down']
         # assert render_down == 16
-        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}_testdown_{render_down}')
+        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}_testdown_{render_down}', 'mic')
         os.makedirs(testsavedir, exist_ok=True)
         rgbs, depths = render_viewpoints(
                 render_poses=data_dict['poses'][data_dict['i_test']],
