@@ -2,6 +2,7 @@ import os, sys, copy, glob, json, time, random, argparse
 from shutil import copyfile
 from tqdm import tqdm, trange
 
+import cv2
 import mmcv
 import imageio
 import numpy as np
@@ -101,7 +102,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_alex = []
     lpips_vgg = []
 
-    for i, c2w in enumerate(tqdm(render_poses)):
+    for i, c2w in enumerate(tqdm(render_poses[:50])):
 
         H, W = HW[i]
         K = Ks[i]
@@ -432,23 +433,36 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             raise NotImplementedError
             # render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
         else:
-            rgb_lr = rgb_lr.permute(0, 3, 1, 2)
-            assert rgb_lr.shape[1] == 3
+            # rgb_lr = rgb_lr.permute(0, 3, 1, 2)
+            # assert rgb_lr.shape[1] == 3
+            # if cfg_train.dynamic_downsampling:
+            #     down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
+            #     h, w = rgb_lr.shape[-2:]
+            #     h, w = int(h / down), int(w / down)
+            #     resize = transforms.Resize([h, w])
+            #     rgb_lr = resize(rgb_lr)
+            # rgb_lr = (rgb_lr - 0.5) / 0.5
+
+            
             if cfg_train.dynamic_downsampling:
                 down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
-                h, w = rgb_lr.shape[-2:]
+                h, w = rgb_lr[0].shape[:2]
                 h, w = int(h / down), int(w / down)
-                resize = transforms.Resize([h, w])
-                rgb_lr = resize(rgb_lr)
+                rgb_lr_down = torch.zeros((rgb_lr.shape[0], h, w, 3))
+                for i in range(rgb_lr.shape[0]):
+                    rgb_lr_down[i] = torch.tensor(cv2.resize(rgb_lr[i].numpy(), (w, h), interpolation=cv2.INTER_AREA))
+            rgb_lr = rgb_lr.permute(0, 3, 1, 2)
+            assert rgb_lr.shape[1] == 3
             rgb_lr = (rgb_lr - 0.5) / 0.5
             
             rgb_lr = rgb_lr.to(device)
             pose_lr = pose_lr.to(device)
-            render_result = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
+            render_result, consistency_loss = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
 
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
-        loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+        rgb_loss = F.mse_loss(render_result['rgb_marched'], target)
+        loss = cfg_train.weight_main * rgb_loss
         psnr = utils.mse2psnr(loss.detach())
         if cfg_train.weight_entropy_last > 0:
             pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
@@ -458,6 +472,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rgbper = (render_result['raw_rgb'] - target[render_result['ray_id']]).pow(2).sum(-1)
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
             loss += cfg_train.weight_rgbper * rgbper_loss
+        
+        loss += cfg_train.weight_consistency * consistency_loss
         loss.backward()
 
         optimizer.step()
@@ -476,7 +492,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             eps_time = time.time() - time0
             eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
             tqdm.write(f'scene_rep_reconstruction ({stage}): iter {global_step:6d} / '
-                       f'Loss: {loss.item():.9f} / PSNR: {np.mean(psnr_lst):5.2f} / '
+                       f'Loss: {loss.item():.5f} / PSNR: {np.mean(psnr_lst):5.2f} / '
+                       f'consistency: {100 * consistency_loss.item():.5f} / '
                        f'lr: {_lr:.6f} / '
                        f'Eps: {eps_time_str}')
             psnr_lst = []
@@ -575,7 +592,7 @@ if __name__=='__main__':
     # load images / poses / camera settings / data split
     # data_dict = load_everything(args=args, cfg=cfg)
 
-    multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx)
+    multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx, down=cfg.data.down)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
     # TODO
@@ -652,71 +669,78 @@ if __name__=='__main__':
                 'render_down': cfg.data.render_down,
             },
         }
-    
-    cfg.data.datadir = os.path.join(cfg.data.datadir, 'mic')
-    scene_id = multiscene_dataset.scene2index['mic']
-    data_dict = load_everything(args=args, cfg=cfg)
-    
-    # render trainset and eval
-    if args.render_train:
-        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
-        os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
-                render_poses=data_dict['poses'][data_dict['i_train']],
-                HW=data_dict['HW'][data_dict['i_train']],
-                Ks=data_dict['Ks'][data_dict['i_train']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
-                lr_poses=data_dict['poses'][data_dict['i_train']],
-                fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
-                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
-                savedir=testsavedir,
-                scene_id=scene_id,
-                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-                **render_viewpoints_kwargs)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
+    scene2index = multiscene_dataset.scene2index
 
-    # render testset and eval
-    if args.render_test:
-        render_down = render_viewpoints_kwargs['render_kwargs']['render_down']
-        # assert render_down == 16
-        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}_testdown_{render_down}', 'mic')
-        os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
-                render_poses=data_dict['poses'][data_dict['i_test']],
-                HW=data_dict['HW'][data_dict['i_test']],
-                Ks=data_dict['Ks'][data_dict['i_test']],
-                gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
-                lr_poses=data_dict['poses'][data_dict['i_train']],
-                fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
-                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
-                savedir=testsavedir,
-                scene_id=scene_id,
-                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-                **render_viewpoints_kwargs)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
+    del multiscene_dataset
 
-    # render video
-    if args.render_video:
-        testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
-        os.makedirs(testsavedir, exist_ok=True)
-        rgbs, depths = render_viewpoints(
-                render_poses=data_dict['render_poses'],
-                HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
-                Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
-                lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
-                lr_poses=data_dict['poses'][data_dict['i_train']],
-                fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
-                fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
-                savedir=testsavedir,
-                scene_id=scene_id,
-                eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-                **render_viewpoints_kwargs)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
-        imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
+    test_scenes = ['hotdog', 'lego', 'mic']
+    for s in test_scenes:
+        print('testing scene', s)
+    
+        cfg.data.datadir = os.path.join(cfg.data.datadir, s)
+        scene_id = scene2index[s]
+        data_dict = load_everything(args=args, cfg=cfg)
+        
+        # render trainset and eval
+        if args.render_train:
+            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
+            os.makedirs(testsavedir, exist_ok=True)
+            rgbs, depths = render_viewpoints(
+                    render_poses=data_dict['poses'][data_dict['i_train']],
+                    HW=data_dict['HW'][data_dict['i_train']],
+                    Ks=data_dict['Ks'][data_dict['i_train']],
+                    gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_train']],
+                    lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                    lr_poses=data_dict['poses'][data_dict['i_train']],
+                    fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
+                    fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
+                    savedir=testsavedir,
+                    scene_id=scene_id,
+                    eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+                    **render_viewpoints_kwargs)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
+
+        # render testset and eval
+        if args.render_test:
+            render_down = render_viewpoints_kwargs['render_kwargs']['render_down']
+            # assert render_down == 16
+            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test_{ckpt_name}_testdown_{render_down}', s)
+            os.makedirs(testsavedir, exist_ok=True)
+            rgbs, depths = render_viewpoints(
+                    render_poses=data_dict['poses'][data_dict['i_test']],
+                    HW=data_dict['HW'][data_dict['i_test']],
+                    Ks=data_dict['Ks'][data_dict['i_test']],
+                    gt_imgs=[data_dict['images'][i].cpu().numpy() for i in data_dict['i_test']],
+                    lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                    lr_poses=data_dict['poses'][data_dict['i_train']],
+                    fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx_render],
+                    fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx_render],
+                    savedir=testsavedir,
+                    scene_id=scene_id,
+                    eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+                    **render_viewpoints_kwargs)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
+
+        # render video
+        if args.render_video:
+            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video_{ckpt_name}')
+            os.makedirs(testsavedir, exist_ok=True)
+            rgbs, depths = render_viewpoints(
+                    render_poses=data_dict['render_poses'],
+                    HW=data_dict['HW'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                    Ks=data_dict['Ks'][data_dict['i_test']][[0]].repeat(len(data_dict['render_poses']), 0),
+                    lr_imgs=[data_dict['images'][i] for i in data_dict['i_train']],
+                    lr_poses=data_dict['poses'][data_dict['i_train']],
+                    fixed_lr_imgs=[data_dict['images'][i] for i in data_dict['i_train'] if i in cfg.fine_train.fixed_lr_idx],
+                    fixed_lr_poses=data_dict['poses'][data_dict['i_train']][cfg.fine_train.fixed_lr_idx],
+                    savedir=testsavedir,
+                    scene_id=scene_id,
+                    eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+                    **render_viewpoints_kwargs)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.rgb.mp4'), utils.to8b(rgbs), fps=30, quality=8)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.depth.mp4'), utils.to8b(1 - depths / np.max(depths)), fps=30, quality=8)
 
     print('Done')
 

@@ -89,12 +89,14 @@ fine_train.update(dict(
     pervoxel_lr=False,
     ray_sampler='in_maskcache',
     fixed_lr_idx=[],
+    fixed_lr_idx_render = [], 
     weight_entropy_last=0.001,
     weight_rgbper=0.01,
     pg_scale=[1000, 2000, 3000, 4000],
     skip_zero_grad_fields=['density', 'k0'],
     dynamic_downsampling=False,
     dynamic_down=16,
+    weight_consistency = 1, 
 ))
 
 ''' Template of model and rendering options

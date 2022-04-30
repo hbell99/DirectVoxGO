@@ -1,16 +1,17 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = 'debug' #'rnd_liif_sum_sep_interp'
+expname = 'rnd_liif_posemb_cons_down1' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
     down=1,
     task='sr',
-    datadir='/home/hydeng/data/NeRF_data/nerf_synthetic/',
+    datadir='./data/nerf_synthetic/',
     dataset_type='blender',
     white_bkgd=True,
     render_down=4,
     batch_size=1, 
+    dataset='MultisceneBlenderDataset_v2'
 )
 
 coarse_train = dict(
@@ -23,7 +24,7 @@ coarse_train = dict(
 
 fine_train = dict(
     N_iters=200000,
-    N_rand=6144,
+    N_rand=4096,
     lrate_k0=0, 
     lrate_map=1e-4,
     lrate_encoder=1e-4,
@@ -36,11 +37,13 @@ fine_train = dict(
     lrate_decay=400,
     pg_scale=[5000, 8000, 12000, 15000],
     fixed_lr_idx=[], #[34, 49, 63],
+    fixed_lr_idx_render = [34, 49, 63], 
     ray_sampler='random',
 
     dynamic_downsampling=True,
     dynamic_down=16,
     # skip_zero_grad_fields=[],
+    weight_consistency = 100, 
 )
 
 fine_model_and_render = dict(
@@ -51,13 +54,13 @@ fine_model_and_render = dict(
     use_coarse_geo=False,
     rgbnet_dim=32,
     name='edsr-baseline' , # 'resnet34', #
-    posbase_pe=0,
+    posbase_pe=10,
 
     rgbnet_depth=3,
 
     global_cell_decode=False,
     no_voxel_feat=False,
-    cat_posemb=False,
+    cat_posemb=True,
 
     interp_width=128,
     interp_depth=5,
@@ -70,5 +73,5 @@ fine_model_and_render = dict(
     feat_pe=0,
     feat_fourier=False,
     n_scene=8, 
-    pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
+    # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
 )

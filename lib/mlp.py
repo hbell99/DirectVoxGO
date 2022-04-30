@@ -65,13 +65,15 @@ class Mapping(nn.Module):
     
     def forward(self, feature, pose):
         # feature: [1, c, h, w]
-        # pose: [4, 4]
+        # pose: [1, 4, 4]
         # out: [1, out_dim, h, w] 
         feature = feature.permute(0, 2, 3, 1) # [1, h, w, c]
         _, h, w, c = feature.shape
 
-        pose = pose.reshape(-1)
-        pose = pose.repeat(_, h, w, 1)
+        __, l, l = pose.shape
+        assert __ == _
+        pose = pose.reshape(_, 1, 1, -1)
+        pose = pose.repeat(1, h, w, 1)
 
         feat = torch.cat([feature, pose], dim=-1)
 

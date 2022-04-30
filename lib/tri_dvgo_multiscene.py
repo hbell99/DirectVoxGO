@@ -75,6 +75,7 @@ class DirectVoxGO(torch.nn.Module):
         self.global_cell_decode = global_cell_decode
         self.feat_pe = feat_pe
         self.feat_fourier = feat_fourier
+
         if name == 'edsr-baseline':
             self.encoder_kwargs = {
                 'n_resblocks': n_resblocks, 'n_feats': n_feats, 'res_scale': res_scale,  
@@ -110,9 +111,9 @@ class DirectVoxGO(torch.nn.Module):
 
         # set anchor poses
         pose_anchor = [
-            pose_spherical(theta=0, phi=90, radius=4),  # xy
-            pose_spherical(theta=90, phi=0, radius=4),  # yz
-            pose_spherical(theta=90, phi=90, radius=4), # zx
+            pose_spherical(theta=0, phi=0, radius=4),   # xy
+            pose_spherical(theta=0, phi=90, radius=4),  # yz
+            pose_spherical(theta=90, phi=0, radius=4),  # zx
         ]
         pose_anchor = torch.stack(pose_anchor, dim=0)
         assert pose_anchor.shape[0] == 3
@@ -264,6 +265,8 @@ class DirectVoxGO(torch.nn.Module):
         self.mask_cache = MaskCache(
                 path=None, mask=mask,
                 xyz_min=self.xyz_min, xyz_max=self.xyz_max)
+        
+        self.consistency_criterion = nn.MSELoss().to(self.xyz_min.device)
 
     def _set_grid_resolution(self, num_voxels):
         # Determine grid resolution
@@ -649,14 +652,45 @@ class DirectVoxGO(torch.nn.Module):
         return ray_pts, ray_id, step_id
     
     def encode_feat(self, rgb_lr, pose_lr,):
+        # xyz_feats = self.encoder(rgb_lr)
+        # feats = {'xy': xyz_feats[[0]], 'yz': xyz_feats[[1]], 'zx': xyz_feats[[2]]}
+        # feats = {
+        #     # 'xy': self.map(feats['xy'], pose_lr[0] - self.pose_anchor[0]), 
+        #     # 'yz': self.map(feats['yz'], pose_lr[1] - self.pose_anchor[1]), 
+        #     # 'zx': self.map(feats['zx'], pose_lr[2] - self.pose_anchor[2])
+        #     # Rotation matrix wo translation P*P^T = I
+        #     'xy': self.map(feats['xy'], self.pose_anchor[0].mm(torch.linalg.inv(pose_lr[0])).unsqueeze(0)), #  pose_lr[0].T 
+        #     'yz': self.map(feats['yz'], self.pose_anchor[1].mm(torch.linalg.inv(pose_lr[1])).unsqueeze(0)), 
+        #     'zx': self.map(feats['zx'], self.pose_anchor[2].mm(torch.linalg.inv(pose_lr[2])).unsqueeze(0))
+        # }
+        # return feats
+        
         xyz_feats = self.encoder(rgb_lr)
-        feats = {'xy': xyz_feats[[0]], 'yz': xyz_feats[[1]], 'zx': xyz_feats[[2]]}
+        xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
+        poses = []
+        for i in range(3):
+            for j in range(3):
+                poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j])))
+        poses = torch.stack(poses, 0)
+
+        mapped_feats = self.map(xyz_feats, poses)
         feats = {
-            'xy': self.map(feats['xy'], pose_lr[0] - self.pose_anchor[0]), 
-            'yz': self.map(feats['yz'], pose_lr[1] - self.pose_anchor[1]), 
-            'zx': self.map(feats['zx'], pose_lr[2] - self.pose_anchor[2])
+            'xy': mapped_feats[[0]],
+            'yz': mapped_feats[[3]],
+            'zx': mapped_feats[[6]],
         }
-        return feats
+
+        _, c, h, w = mapped_feats.shape
+        mapped_feats = mapped_feats.reshape(3, 3, c, h, w)
+
+        consistency_loss = 0.
+        for k in range(3):
+            for i in range(3):
+                for j in range(3):
+                    consistency_loss += self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
+        
+        return feats, consistency_loss
+
 
     def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
         '''Volume rendering
@@ -664,10 +698,10 @@ class DirectVoxGO(torch.nn.Module):
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        feats = self.encode_feat(rgb_lr, pose_lr)
+        feats, consistency_loss = self.encode_feat(rgb_lr, pose_lr)
         # self.k0 = feats
         ret_dict = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
-        return ret_dict
+        return ret_dict, consistency_loss
     
     def render(self, feats, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'

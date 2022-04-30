@@ -11,18 +11,21 @@ from torch.utils.data import Dataset
 from torchvision import transforms as T
 
 
+# translation along x axis
 trans_t = lambda t : torch.Tensor([
     [1,0,0,0],
     [0,1,0,0],
     [0,0,1,t],
     [0,0,0,1]]).float()
 
+# rotation along x axis
 rot_phi = lambda phi : torch.Tensor([
     [1,0,0,0],
     [0,np.cos(phi),-np.sin(phi),0],
     [0,np.sin(phi), np.cos(phi),0],
     [0,0,0,1]]).float()
 
+# rotation along y axis
 rot_theta = lambda th : torch.Tensor([
     [np.cos(th),0,-np.sin(th),0],
     [0,1,0,0],
@@ -412,7 +415,9 @@ class MultisceneBlenderDataset_v2(Dataset):
     near, far = 2., 6.
     render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
 
-    def __init__(self, basedir, half_res=False, testskip=1, down=1, split='train', white_bkgd=True, fixed_idx=None):
+    def __init__(self, basedir, testskip=1, down=1, split='train', white_bkgd=True, fixed_idx=None):
+        self.H = self.H // down
+        self.W = self.W // down
         if split =='train' or testskip==0:
             self.skip = 1
         else:
@@ -438,10 +443,12 @@ class MultisceneBlenderDataset_v2(Dataset):
             for frame in self.meta[s]['frames']:
                 fname = os.path.join(basedir, s, frame['file_path'] + '.png')
                 image = imageio.imread(fname)
-                H, W = image.shape[:2]
-                assert H == self.H
-                assert W == self.W
+
                 image = (np.array(image) / 255.).astype(np.float32)
+                if down > 1:
+                    image = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
+                
+                H, W = image.shape[:2]
                 if self.white_bkgd:
                     image = image[...,:3]*image[...,-1:] + (1.-image[...,-1:])
                 else:
