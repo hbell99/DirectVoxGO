@@ -154,6 +154,11 @@ fine_model_and_render.update(dict(
     feat_pe=0,
     feat_fourier=False,
     n_scene=8, 
+
+    mlp_map=True, 
+    conv_map=False,
+    closed_map=False,
+    compute_consistency=True,
 ))
 
 del deepcopy

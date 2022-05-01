@@ -100,18 +100,69 @@ class Interp_MLP(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
+
+def default_conv(in_channels, out_channels, kernel_size, bias=True):
+    return nn.Conv2d(
+        in_channels, out_channels, kernel_size,
+        padding=(kernel_size//2), bias=bias)
+
+
+class ResBlock(nn.Module):
+    def __init__(
+        self, conv, n_feats, kernel_size,
+        bias=True, bn=False, act=nn.ReLU(True)):
+
+        super(ResBlock, self).__init__()
+        m = []
+        for i in range(2):
+            m.append(conv(n_feats, n_feats, kernel_size, bias=bias))
+            if bn:
+                m.append(nn.BatchNorm2d(n_feats))
+            if i == 0:
+                m.append(act)
+
+        self.body = nn.Sequential(*m)
+
+    def forward(self, x):
+        res = self.body(x)
+        res += x
+
+        return res
+
 class Conv_Mapping(nn.Module):
-    def __init__(self, in_dim, out_dim=12, depth=1, width=64):
+    def __init__(self, in_dim, out_dim=12, kernel_size=3, n_resblocks=5):
         super().__init__()
-        pass
+        # self.feat_linears = nn.Sequential(
+        #     nn.Linear(in_dim, width),  nn.ReLU(inplace=True),  
+        #     *[
+        #         nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True))
+        #         for _ in range(depth-2)
+        #     ]
+        # )
+        # self.out_linear = nn.Linear(width, out_dim)
+        act = nn.ReLU(inplace=True)
+        m_body = [
+            ResBlock(
+                default_conv, in_dim, kernel_size, act=act
+            ) for _ in range(n_resblocks)
+        ]
+        m_body.append(default_conv(in_dim, out_dim, kernel_size))
+
+        self.body = nn.Sequential(*m_body)
     
     def forward(self, feature, pose):
         # feature: [1, c, h, w]
-        # pose: [4, 4]
+        # pose: [1, 4, 4]
         # out: [1, out_dim, h, w] 
         _, c, h, w = feature.shape
-        pose = pose.reshape(1, 16, 1, 1)
-        pose_map = pose.repeat(1, 1, h, w)
-        assert pose_map.shape[-2:] == feature.shape[-2:]
 
-        pass
+        __, l, l = pose.shape
+        assert __ == _
+        pose = pose.reshape(_, -1, 1, 1)
+        pose = pose.repeat(1, 1, h, w)
+
+        feat = torch.cat([feature, pose], dim=1)
+
+        out = self.body(feat)
+        return out

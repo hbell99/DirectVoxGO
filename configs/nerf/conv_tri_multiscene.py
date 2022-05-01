@@ -1,10 +1,10 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = 'rnd_liif_posemb_closed_down4' #'rnd_liif_sum_sep_interp'
+expname = 'rnd_liif_posemb_conv_down1' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
-    down=4,
+    down=1,
     task='sr',
     datadir='./data/nerf_synthetic/',
     dataset_type='blender',
@@ -24,7 +24,7 @@ coarse_train = dict(
 # )
 
 fine_train = dict(
-    N_iters=200000,
+    N_iters=100,
     N_rand=4096,
     lrate_k0=0, 
     lrate_map=1e-4,
@@ -53,7 +53,7 @@ fine_model_and_render = dict(
     cell_decode=True,
     local_ensemble=True,
     use_coarse_geo=False,
-    rgbnet_dim=64,
+    rgbnet_dim=32,
     name='edsr-baseline' , # 'resnet34', #
     posbase_pe=10,
 
@@ -76,8 +76,7 @@ fine_model_and_render = dict(
     n_scene=8, 
 
     mlp_map=False, 
-    conv_map=False,
-    closed_map=True,
+    conv_map=True,
+    closed_map=False,
     # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
-    compute_consistency=True,
 )

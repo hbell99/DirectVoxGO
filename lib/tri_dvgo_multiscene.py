@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP
+from .mlp import Mapping, Interp_MLP, Conv_Mapping
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -24,12 +24,12 @@ render_utils_cuda = load(
             for path in ['cuda/render_utils.cpp', 'cuda/render_utils_kernel.cu']],
         verbose=True)
 
-total_variation_cuda = load(
-        name='total_variation_cuda',
-        sources=[
-            os.path.join(parent_dir, path)
-            for path in ['cuda/total_variation.cpp', 'cuda/total_variation_kernel.cu']],
-        verbose=True)
+# total_variation_cuda = load(
+#         name='total_variation_cuda',
+#         sources=[
+#             os.path.join(parent_dir, path)
+#             for path in ['cuda/total_variation.cpp', 'cuda/total_variation_kernel.cu']],
+#         verbose=True)
 
 
 '''Model'''
@@ -63,6 +63,13 @@ class DirectVoxGO(torch.nn.Module):
                  
                  n_scene=8,
 
+                 mlp_map=True, 
+                 conv_map=False,
+                 closed_map=False,
+
+                 compute_consistency=False,
+
+
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
                  **kwargs):
@@ -75,6 +82,11 @@ class DirectVoxGO(torch.nn.Module):
         self.global_cell_decode = global_cell_decode
         self.feat_pe = feat_pe
         self.feat_fourier = feat_fourier
+
+        self.mlp_map = mlp_map
+        self.conv_map=conv_map
+        self.closed_map=closed_map
+        self.compute_consistency = compute_consistency
 
         if name == 'edsr-baseline':
             self.encoder_kwargs = {
@@ -99,10 +111,13 @@ class DirectVoxGO(torch.nn.Module):
         
         else:
             raise NotImplementedError
-
-        self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
-        print('initialized mapping networks')
-        print(self.map)
+        if mlp_map:
+            self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+            print('initialized mapping networks')
+            # print(self.map)
+        elif conv_map:
+            self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+            print('initialized mapping networks')
         
         self.register_buffer('xyz_min', torch.cuda.FloatTensor(xyz_min))
         self.register_buffer('xyz_max', torch.cuda.FloatTensor(xyz_max))
@@ -153,6 +168,10 @@ class DirectVoxGO(torch.nn.Module):
             'map_width': map_width,
             'feat_pe': feat_pe,
             'feat_fourier': feat_fourier,
+            'mlp_map': mlp_map,
+            'conv_map': conv_map,
+            'closed_map': closed_map,
+            'compute_consistency': compute_consistency
         }
 
         if implicit_voxel_feat:
@@ -651,6 +670,13 @@ class DirectVoxGO(torch.nn.Module):
         step_id = step_id[mask_inbbox]
         return ray_pts, ray_id, step_id
     
+
+    def closed_map_transform(self, feats, theta):
+        grid = F.affine_grid(theta, feats.size(), align_corners=True)
+        x = F.grid_sample(feats, grid, align_corners=True)
+
+        return x
+    
     def encode_feat(self, rgb_lr, pose_lr,):
         # xyz_feats = self.encoder(rgb_lr)
         # feats = {'xy': xyz_feats[[0]], 'yz': xyz_feats[[1]], 'zx': xyz_feats[[2]]}
@@ -667,13 +693,28 @@ class DirectVoxGO(torch.nn.Module):
         
         xyz_feats = self.encoder(rgb_lr)
         xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
-        poses = []
-        for i in range(3):
-            for j in range(3):
-                poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j])))
-        poses = torch.stack(poses, 0)
+        if self.closed_map:
+            theta = []
+            for i in range(3):
+                theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
+            for i in range(3):
+                theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
+            for i in range(3):
+                theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
+            
+            theta = torch.stack(theta, 0)
 
-        mapped_feats = self.map(xyz_feats, poses)
+            mapped_feats = self.closed_map_transform(xyz_feats, theta)
+
+        else:
+            poses = []
+            for i in range(3):
+                for j in range(3):
+                    poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j])))
+            poses = torch.stack(poses, 0)
+
+            mapped_feats = self.map(xyz_feats, poses)
+        
         feats = {
             'xy': mapped_feats[[0]],
             'yz': mapped_feats[[3]],
@@ -684,10 +725,11 @@ class DirectVoxGO(torch.nn.Module):
         mapped_feats = mapped_feats.reshape(3, 3, c, h, w)
 
         consistency_loss = 0.
+
         for k in range(3):
             for i in range(3):
                 for j in range(3):
-                    consistency_loss += self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
+                    consistency_loss += F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
         return feats, consistency_loss
 

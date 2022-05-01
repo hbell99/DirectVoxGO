@@ -455,6 +455,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 rgb_lr_down = torch.zeros((rgb_lr.shape[0], h, w, 3))
                 for i in range(rgb_lr.shape[0]):
                     rgb_lr_down[i] = torch.tensor(cv2.resize(rgb_lr[i].numpy(), (w, h), interpolation=cv2.INTER_AREA))
+                rgb_lr = rgb_lr_down
             rgb_lr = rgb_lr.permute(0, 3, 1, 2)
             assert rgb_lr.shape[1] == 3
             rgb_lr = (rgb_lr - 0.5) / 0.5
