@@ -1,18 +1,19 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = 'rnd_liif_posemb_cons_down1' #'rnd_liif_sum_sep_interp'
-basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
+expname = 'rnd_liif_posemb_cons_down2'
+basedir = './logs/tri_dvgo_multiscene/Synthetic_NSVF/'
 
 data = dict(
-    down=1,
-    task='sr',
-    datadir='./data/nerf_synthetic/',
-    dataset_type='blender',
+    down=2,
+    task='',
+    datadir='./data/Synthetic_NSVF',
+    dataset_type='nsvf',
+    inverse_y=True,
     white_bkgd=True,
     render_down=4,
     batch_size=1, 
-    dataset='MultisceneBlenderDataset_v2',
-    test_scenes=['hotdog', 'lego', 'mic']
+    dataset='MultisceneNSVFDataset',
+    test_scenes=['Wineholder', 'Lifestyle', 'Palace']
 )
 
 coarse_train = dict(
@@ -38,7 +39,7 @@ fine_train = dict(
     lrate_decay=400,
     pg_scale=[5000, 8000, 12000, 15000],
     fixed_lr_idx=[], #[34, 49, 63],
-    fixed_lr_idx_render = [34, 49, 63], 
+    fixed_lr_idx_render=[34, 49, 63], 
     ray_sampler='random',
 
     dynamic_downsampling=True,

@@ -1,4 +1,3 @@
-import enum
 import os
 import torch
 import numpy as np
@@ -9,6 +8,8 @@ import cv2
 import pickle
 from torch.utils.data import Dataset
 from torchvision import transforms as T
+
+from .load_nsvf import MultisceneNSVFDataset
 
 
 # translation along x axis
@@ -542,5 +543,6 @@ class MultisceneBlenderDataset_v2(Dataset):
 
 dataset_dict = {
     'MultisceneBlenderDataset_v2': MultisceneBlenderDataset_v2, 
-    'MultisceneBlenderDataset': MultisceneBlenderDataset
+    'MultisceneBlenderDataset': MultisceneBlenderDataset,
+    'MultisceneNSVFDataset': MultisceneNSVFDataset,
 }

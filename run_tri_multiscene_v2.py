@@ -87,7 +87,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
-    feats = model.encode_feat(rgb_lr, pose_lr)
+    feats, _ = model.encode_feat(rgb_lr, pose_lr)
     print(feats['xy'].shape)
     if render_factor!=0:
         HW = np.copy(HW)
@@ -241,7 +241,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     elif os.path.isfile(last_ckpt_path):
         reload_ckpt_path = last_ckpt_path
     else:
-        reload_ckpt_path = None
+        ckpts = [os.path.join(cfg.basedir, cfg.expname, f) for f in sorted(os.listdir(os.path.join(cfg.basedir, cfg.expname))) if 'tar' in f and 'fine' in f]
+        if len(ckpts) > 0:
+            reload_ckpt_path = ckpts[-1]
+        else:
+            reload_ckpt_path = None
 
     # init model and optimizer
     if reload_ckpt_path is None:
@@ -673,11 +677,12 @@ if __name__=='__main__':
 
     del multiscene_dataset
 
-    test_scenes = ['hotdog', 'lego', 'mic']
+    test_scenes = cfg.data.test_scenes
+    cfg.data.down = 1
+    basedir = cfg.data.datadir
     for s in test_scenes:
         print('testing scene', s)
-    
-        cfg.data.datadir = os.path.join(cfg.data.datadir, s)
+        cfg.data.datadir = os.path.join(basedir, s)
         scene_id = scene2index[s]
         data_dict = load_everything(args=args, cfg=cfg)
         

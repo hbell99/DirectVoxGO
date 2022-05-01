@@ -87,7 +87,7 @@ def load_data(args):
                 images = images[...,:3]*images[...,-1:]
 
     elif args.dataset_type == 'nsvf':
-        images, poses, render_poses, hwf, i_split = load_nsvf_data(args.datadir)
+        images, poses, render_poses, hwf, i_split = load_nsvf_data(args.datadir, args.down)
         print('Loaded nsvf', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
