@@ -32,6 +32,24 @@ render_utils_cuda = load(
 #         verbose=True)
 
 
+def load_liif_state_dict(liif_path):
+    liif_model_sd = torch.load(liif_path)['model']['sd']
+
+    liif_sd = {}
+    liif_sd['model.0.bias'] = liif_model_sd['imnet.layers.2.bias']
+    liif_sd['model.2.0.weight'] = liif_model_sd['imnet.layers.4.weight']
+    liif_sd['model.2.0.bias'] = liif_model_sd['imnet.layers.4.bias']
+    liif_sd['model.3.0.weight'] = liif_model_sd['imnet.layers.6.weight']
+    liif_sd['model.3.0.bias'] = liif_model_sd['imnet.layers.6.bias']
+    return liif_sd
+
+def upadate_interp_state_dict(interp, liif_sd):
+    interp_sd = interp.state_dict()
+    interp_sd.update(liif_sd)
+    interp.load_state_dict(interp_sd)
+    return interp
+
+
 '''Model'''
 class DirectVoxGO(torch.nn.Module):
     def __init__(self, xyz_min, xyz_max,
@@ -68,10 +86,14 @@ class DirectVoxGO(torch.nn.Module):
                  closed_map=False,
 
                  compute_consistency=False,
+                 n_mapping=1, 
 
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
+
+                 liif_state_dict=None, #'/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
+                 load_liif_sd=False,
                  **kwargs):
         super(DirectVoxGO, self).__init__()
         self.liif = liif
@@ -112,11 +134,38 @@ class DirectVoxGO(torch.nn.Module):
         else:
             raise NotImplementedError
         if mlp_map:
-            self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+            if n_mapping == 1:
+                self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+            elif n_mapping == 3:
+                self.map_xy = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+                self.map_yz = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+                self.map_zx = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
+                self.map = {
+                    'xy': self.map_xy,
+                    'yz': self.map_yz,
+                    'zx': self.map_zx,
+                }
+                print(self.map)
+            else:
+                raise NotImplementedError
             print('initialized mapping networks')
             # print(self.map)
         elif conv_map:
-            self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+            if n_mapping == 1:
+                self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
+            elif n_mapping == 3:
+                self.map_xy = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_yz = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_zx = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map = {
+                    'xy': self.map_xy,
+                    'yz': self.map_yz,
+                    'zx': self.map_zx,
+                }
+                print(self.map)
+            else:
+                raise NotImplementedError
+
             print('initialized mapping networks')
         
         self.register_buffer('xyz_min', torch.cuda.FloatTensor(xyz_min))
@@ -190,6 +239,12 @@ class DirectVoxGO(torch.nn.Module):
             self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
             self.interp_yz = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
             self.interp_zx = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            if load_liif_sd:
+                print('loading pretrained state dict from liif')
+                liif_sd = load_liif_state_dict(liif_state_dict)
+                self.interp_xy = upadate_interp_state_dict(self.interp_xy, liif_sd)
+                self.interp_yz = upadate_interp_state_dict(self.interp_yz, liif_sd)
+                self.interp_zx = upadate_interp_state_dict(self.interp_zx, liif_sd)
             self.interp = {
                 'xy': self.interp_xy,
                 'yz': self.interp_yz,
@@ -203,7 +258,7 @@ class DirectVoxGO(torch.nn.Module):
             #     ],
             #     nn.Linear(interp_width, rgbnet_dim),
             # )
-            print(self.interp)
+            # print(self.interp)
             print('dvgo: dim0              ', dim0)
             print('dvgo: feat_unfold       ', self.feat_unfold)
             print('dvgo: cell_decode       ', self.cell_decode)
@@ -678,19 +733,7 @@ class DirectVoxGO(torch.nn.Module):
         return x
     
     def encode_feat(self, rgb_lr, pose_lr,):
-        # xyz_feats = self.encoder(rgb_lr)
-        # feats = {'xy': xyz_feats[[0]], 'yz': xyz_feats[[1]], 'zx': xyz_feats[[2]]}
-        # feats = {
-        #     # 'xy': self.map(feats['xy'], pose_lr[0] - self.pose_anchor[0]), 
-        #     # 'yz': self.map(feats['yz'], pose_lr[1] - self.pose_anchor[1]), 
-        #     # 'zx': self.map(feats['zx'], pose_lr[2] - self.pose_anchor[2])
-        #     # Rotation matrix wo translation P*P^T = I
-        #     'xy': self.map(feats['xy'], self.pose_anchor[0].mm(torch.linalg.inv(pose_lr[0])).unsqueeze(0)), #  pose_lr[0].T 
-        #     'yz': self.map(feats['yz'], self.pose_anchor[1].mm(torch.linalg.inv(pose_lr[1])).unsqueeze(0)), 
-        #     'zx': self.map(feats['zx'], self.pose_anchor[2].mm(torch.linalg.inv(pose_lr[2])).unsqueeze(0))
-        # }
-        # return feats
-        
+
         xyz_feats = self.encoder(rgb_lr)
         xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
         if self.closed_map:
@@ -710,11 +753,21 @@ class DirectVoxGO(torch.nn.Module):
             poses = []
             for i in range(3):
                 for j in range(3):
-                    poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j])))
+                    if not isinstance(self.map, dict):
+                        poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                    else:
+                        poses.append(pose_lr[j])
             poses = torch.stack(poses, 0)
+            if not isinstance(self.map, dict):
+                mapped_feats = self.map(xyz_feats, poses)
+            else:
+                mapped_feats = []
+                for i, s in enumerate(['xy', 'yz', 'zx']):
+                    mapped_feat = self.map[s](xyz_feats[3*i: 3*i+3], poses[3*i: 3*i+3])
+                    mapped_feats.append(mapped_feat)
+                
+                mapped_feats = torch.cat(mapped_feats, 0)
 
-            mapped_feats = self.map(xyz_feats, poses)
-        
         feats = {
             'xy': mapped_feats[[0]],
             'yz': mapped_feats[[3]],

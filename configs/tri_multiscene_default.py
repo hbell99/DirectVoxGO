@@ -59,6 +59,9 @@ coarse_train = dict(
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_encoder=1e-3, 
     lrate_map=1e-3,
+    lrate_map_xy=1e-3,
+    lrate_map_yz=1e-3,
+    lrate_map_zx=1e-3,
     lrate_interp=1e-3,
     lrate_interp_xy=1e-3,
     lrate_interp_yz=1e-3,
@@ -141,6 +144,8 @@ fine_model_and_render.update(dict(
     cat_posemb=True,
     use_coarse_geo=False,
     pretrained_state_dict='/data/hydeng/SR_NeRF/DirectVoxGO/pretrained/edsr-baseline.pth',
+    liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
+    load_liif_sd=False,
     name='',
 
     interp_width=64,
@@ -159,6 +164,8 @@ fine_model_and_render.update(dict(
     conv_map=False,
     closed_map=False,
     compute_consistency=True,
+
+    n_mapping=1,
 ))
 
 del deepcopy

@@ -55,6 +55,7 @@ def load_checkpoint(model, optimizer, ckpt_path, no_reload_optimizer):
     ckpt = torch.load(ckpt_path)
     start = ckpt['global_step']
     model.load_state_dict(ckpt['model_state_dict'])
+    print('loaded checkpoints!!!')
     if not no_reload_optimizer:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     return model, optimizer, start

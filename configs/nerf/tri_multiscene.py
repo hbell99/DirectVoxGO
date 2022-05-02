@@ -1,18 +1,19 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = 'rnd_liif_posemb_closed_down4' #'rnd_liif_sum_sep_interp'
+expname = '3MLP_liif_pretrain_down4' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
     down=4,
     task='sr',
     datadir='./data/nerf_synthetic/',
+    # datadir='/home/hydeng/data/NeRF_data/nerf_synthetic',
     dataset_type='blender',
     white_bkgd=True,
     render_down=4,
     batch_size=1, 
     dataset='MultisceneBlenderDataset_v2',
-    test_scenes=['hotdog', 'lego', 'mic']
+    test_scenes=['hotdog', 'mic', 'lego']
 )
 
 coarse_train = dict(
@@ -27,13 +28,16 @@ fine_train = dict(
     N_iters=200000,
     N_rand=4096,
     lrate_k0=0, 
-    lrate_map=1e-4,
+    lrate_map=0,
     lrate_encoder=1e-4,
     lrate_interp=0,
     lrate_interp_xy=5e-4,
     lrate_interp_yz=5e-4,
     lrate_interp_zx=5e-4,
-    lrate_rgbnet=5e-4,
+
+    lrate_map_xy=5e-4,
+    lrate_map_yz=5e-4,
+    lrate_map_zx=5e-4,
 
     lrate_decay=400,
     pg_scale=[5000, 8000, 12000, 15000],
@@ -53,7 +57,7 @@ fine_model_and_render = dict(
     cell_decode=True,
     local_ensemble=True,
     use_coarse_geo=False,
-    rgbnet_dim=64,
+    rgbnet_dim=32,
     name='edsr-baseline' , # 'resnet34', #
     posbase_pe=10,
 
@@ -63,8 +67,8 @@ fine_model_and_render = dict(
     no_voxel_feat=False,
     cat_posemb=True,
 
-    interp_width=128,
-    interp_depth=5,
+    interp_width=256,
+    interp_depth=4,
 
     map_depth=5,
 
@@ -75,9 +79,14 @@ fine_model_and_render = dict(
     feat_fourier=False,
     n_scene=8, 
 
-    mlp_map=False, 
+    mlp_map=True, 
     conv_map=False,
-    closed_map=True,
+    closed_map=False,
+    # liif_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline-liif.pth',
+    liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
+    load_liif_sd=True,
     # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
     compute_consistency=True,
+
+    n_mapping=3,
 )
