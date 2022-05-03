@@ -86,7 +86,9 @@ class DirectVoxGO(torch.nn.Module):
                  closed_map=False,
 
                  compute_consistency=False,
-                 n_mapping=1, 
+                 n_mapping=3, 
+                 compute_cosine=False,
+
 
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
@@ -104,11 +106,13 @@ class DirectVoxGO(torch.nn.Module):
         self.global_cell_decode = global_cell_decode
         self.feat_pe = feat_pe
         self.feat_fourier = feat_fourier
+        self.n_mapping = n_mapping
 
         self.mlp_map = mlp_map
         self.conv_map=conv_map
         self.closed_map=closed_map
         self.compute_consistency = compute_consistency
+        self.compute_cosine = compute_cosine
 
         if name == 'edsr-baseline':
             self.encoder_kwargs = {
@@ -220,7 +224,9 @@ class DirectVoxGO(torch.nn.Module):
             'mlp_map': mlp_map,
             'conv_map': conv_map,
             'closed_map': closed_map,
-            'compute_consistency': compute_consistency
+            'n_mapping': n_mapping,
+            'compute_consistency': compute_consistency,
+            'compute_cosine': compute_cosine,
         }
 
         if implicit_voxel_feat:
@@ -782,9 +788,27 @@ class DirectVoxGO(torch.nn.Module):
         for k in range(3):
             for i in range(3):
                 for j in range(3):
-                    consistency_loss += F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
+                    consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
-        return feats, consistency_loss
+        
+        cosine_loss = 0.
+        # if self.compute_cosine:
+        for k in range(3):
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).sum()
+            cosine_loss += 1/3. * similarity.abs()
+        for k in range(3):
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).sum()
+            cosine_loss += 1/3. * similarity.abs()
+        for k in range(3):
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).sum()
+            cosine_loss += 1/3. * similarity.abs()
+        
+        cosine_loss = cosine_loss / h / w
+        
+        return feats, consistency_loss, cosine_loss
 
 
     def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
@@ -793,10 +817,10 @@ class DirectVoxGO(torch.nn.Module):
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        feats, consistency_loss = self.encode_feat(rgb_lr, pose_lr)
+        feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr)
         # self.k0 = feats
         ret_dict = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
-        return ret_dict, consistency_loss
+        return ret_dict, consistency_loss, cosine_loss
     
     def render(self, feats, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'

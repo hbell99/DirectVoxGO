@@ -99,7 +99,8 @@ fine_train.update(dict(
     skip_zero_grad_fields=['density', 'k0'],
     dynamic_downsampling=False,
     dynamic_down=16,
-    weight_consistency = 1, 
+    weight_consistency=0, 
+    weight_cosine=0, 
 ))
 
 ''' Template of model and rendering options
@@ -164,6 +165,7 @@ fine_model_and_render.update(dict(
     conv_map=False,
     closed_map=False,
     compute_consistency=True,
+    compute_cosine=False,
 
     n_mapping=1,
 ))

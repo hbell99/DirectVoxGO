@@ -1,6 +1,6 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = '3MLP_liif_pretrain_down4' #'rnd_liif_sum_sep_interp'
+expname = '3conv_liif_pretrain_down4_cosine' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
@@ -48,7 +48,8 @@ fine_train = dict(
     dynamic_downsampling=True,
     dynamic_down=16,
     # skip_zero_grad_fields=[],
-    weight_consistency=0, #100, 
+    weight_consistency=0.01, #100, 
+    weight_cosine=0.01,
 )
 
 fine_model_and_render = dict(
@@ -79,14 +80,16 @@ fine_model_and_render = dict(
     feat_fourier=False,
     n_scene=8, 
 
-    mlp_map=True, 
-    conv_map=False,
+    mlp_map=False, 
+    conv_map=True,
     closed_map=False,
     # liif_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline-liif.pth',
     liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
     load_liif_sd=True,
     # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
     compute_consistency=True,
+    
+    compute_cosine=True,
 
     n_mapping=3,
 )
