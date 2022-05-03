@@ -87,7 +87,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
-    feats, _, _ = model.encode_feat(rgb_lr, pose_lr)
+    feats, _, _, _ = model.encode_feat(rgb_lr, pose_lr)
     print(feats['xy'].shape)
     if render_factor!=0:
         HW = np.copy(HW)
@@ -462,7 +462,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             
             rgb_lr = rgb_lr.to(device)
             pose_lr = pose_lr.to(device)
-            render_result, consistency_loss, cosine_loss = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
+            render_result, consistency_loss, cosine_loss, distillation_loss = model(rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
 
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
@@ -480,6 +480,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         
         loss += cfg_train.weight_consistency * consistency_loss
         loss += cfg_train.weight_cosine * cosine_loss
+        loss += cfg_train.weight_distillation * distillation_loss
         loss.backward()
 
         optimizer.step()
@@ -501,6 +502,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                        f'Loss: {loss.item():.5f} / PSNR: {np.mean(psnr_lst):5.2f} / '
                        f'consistency: {consistency_loss.item():.5f} / '
                        f'cosine: {cosine_loss.item():.5f} / '
+                       f'distillation: {distillation_loss.item():.5f} / '
                        f'lr: {_lr:.6f} / '
                        f'Eps: {eps_time_str}')
             psnr_lst = []

@@ -1,13 +1,13 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = '3conv_liif_pretrain_down4_cosine' #'rnd_liif_sum_sep_interp'
+expname = '3conv_liif_pretrain_down4_cosine_featunfold' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
     down=4,
-    task='sr',
-    datadir='./data/nerf_synthetic/',
-    # datadir='/home/hydeng/data/NeRF_data/nerf_synthetic',
+    task='',
+    # datadir='./data/nerf_synthetic/',
+    datadir='/home/hydeng/data/NeRF_data/nerf_synthetic',
     dataset_type='blender',
     white_bkgd=True,
     render_down=4,
@@ -25,8 +25,8 @@ coarse_train = dict(
 # )
 
 fine_train = dict(
-    N_iters=200000,
-    N_rand=4096,
+    N_iters=800000,
+    N_rand=1024,
     lrate_k0=0, 
     lrate_map=0,
     lrate_encoder=1e-4,
@@ -39,8 +39,10 @@ fine_train = dict(
     lrate_map_yz=5e-4,
     lrate_map_zx=5e-4,
 
+    lrate_distillation_head=1e-4,
+
     lrate_decay=400,
-    pg_scale=[5000, 8000, 12000, 15000],
+    pg_scale=[20000, 32000, 48000, 60000],
     fixed_lr_idx=[], #[34, 49, 63],
     fixed_lr_idx_render = [34, 49, 63], 
     ray_sampler='random',
@@ -50,15 +52,17 @@ fine_train = dict(
     # skip_zero_grad_fields=[],
     weight_consistency=0.01, #100, 
     weight_cosine=0.01,
+    
+    weight_distillation=0.001,
 )
 
 fine_model_and_render = dict(
     implicit_voxel_feat=True,
-    feat_unfold=False,
+    feat_unfold=True,
     cell_decode=True,
     local_ensemble=True,
     use_coarse_geo=False,
-    rgbnet_dim=32,
+    rgbnet_dim=64,
     name='edsr-baseline' , # 'resnet34', #
     posbase_pe=10,
 
@@ -69,7 +73,7 @@ fine_model_and_render = dict(
     cat_posemb=True,
 
     interp_width=256,
-    interp_depth=4,
+    interp_depth=5,
 
     map_depth=5,
 
@@ -83,13 +87,15 @@ fine_model_and_render = dict(
     mlp_map=False, 
     conv_map=True,
     closed_map=False,
-    # liif_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline-liif.pth',
-    liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
+    liif_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline-liif.pth',
+    # liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
     load_liif_sd=True,
-    # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
+    pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
     compute_consistency=True,
     
     compute_cosine=True,
 
     n_mapping=3,
+
+    use_anchor_liif=True,
 )

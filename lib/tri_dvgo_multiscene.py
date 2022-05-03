@@ -36,11 +36,14 @@ def load_liif_state_dict(liif_path):
     liif_model_sd = torch.load(liif_path)['model']['sd']
 
     liif_sd = {}
-    liif_sd['model.0.bias'] = liif_model_sd['imnet.layers.2.bias']
-    liif_sd['model.2.0.weight'] = liif_model_sd['imnet.layers.4.weight']
-    liif_sd['model.2.0.bias'] = liif_model_sd['imnet.layers.4.bias']
-    liif_sd['model.3.0.weight'] = liif_model_sd['imnet.layers.6.weight']
-    liif_sd['model.3.0.bias'] = liif_model_sd['imnet.layers.6.bias']
+    liif_sd['model.0.weight'] = liif_model_sd['imnet.layers.0.weight']
+    liif_sd['model.0.bias'] = liif_model_sd['imnet.layers.0.bias']
+    liif_sd['model.2.0.weight'] = liif_model_sd['imnet.layers.2.weight']
+    liif_sd['model.2.0.bias'] = liif_model_sd['imnet.layers.2.bias']
+    liif_sd['model.3.0.weight'] = liif_model_sd['imnet.layers.4.weight']
+    liif_sd['model.3.0.bias'] = liif_model_sd['imnet.layers.4.bias']
+    liif_sd['model.4.0.weight'] = liif_model_sd['imnet.layers.6.weight']
+    liif_sd['model.4.0.bias'] = liif_model_sd['imnet.layers.6.bias']
     return liif_sd
 
 def upadate_interp_state_dict(interp, liif_sd):
@@ -89,7 +92,7 @@ class DirectVoxGO(torch.nn.Module):
                  n_mapping=3, 
                  compute_cosine=False,
 
-
+                 use_anchor_liif=False,
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
@@ -113,6 +116,8 @@ class DirectVoxGO(torch.nn.Module):
         self.closed_map=closed_map
         self.compute_consistency = compute_consistency
         self.compute_cosine = compute_cosine
+
+        self.use_anchor_liif = use_anchor_liif
 
         if name == 'edsr-baseline':
             self.encoder_kwargs = {
@@ -227,6 +232,7 @@ class DirectVoxGO(torch.nn.Module):
             'n_mapping': n_mapping,
             'compute_consistency': compute_consistency,
             'compute_cosine': compute_cosine,
+            'use_anchor_liif': use_anchor_liif,
         }
 
         if implicit_voxel_feat:
@@ -256,6 +262,14 @@ class DirectVoxGO(torch.nn.Module):
                 'yz': self.interp_yz,
                 'zx': self.interp_yz,
             }
+            if use_anchor_liif:
+                self.anchor_liif = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+                self.anchor_liif = upadate_interp_state_dict(self.anchor_liif, liif_sd)
+                
+                self.distillation_head = nn.Sequential(
+                    nn.Linear(rgbnet_dim, rgbnet_dim),
+                    nn.ReLU(inplace=True)
+                )
             # self.interp = nn.Sequential(
             #     *[nn.Linear(dim0, interp_width), nn.ReLU(inplace=True)],
             #     *[
@@ -574,6 +588,8 @@ class DirectVoxGO(torch.nn.Module):
 
         splits = {'xy': [0, 1], 'yz': [1, 2], 'zx': [2, 0]}
         interp_feats = []
+        distillation_loss = 0.
+        n_avg = 1.0 * len(vx_lst) * len(vy_lst) * len(splits)
         for s, idxs in splits.items():
             feat_coord = self.make_coord(axis=s)
             rx, ry = r[idxs]
@@ -610,6 +626,14 @@ class DirectVoxGO(torch.nn.Module):
                     pred = self.interp[s](inp.squeeze(0))
                     preds.append(pred)
 
+                    if self.use_anchor_liif:
+
+                        anchor_pred = self.anchor_liif(inp.squeeze(0))
+                        pred_distillation = self.distillation_head(pred)
+                        anchor_distillation = self.distillation_head(anchor_pred)
+
+                        distillation_loss += 1 / n_avg * F.mse_loss(pred_distillation, anchor_distillation)
+
                     area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
                     areas.append(area + 1e-9)
             
@@ -630,7 +654,7 @@ class DirectVoxGO(torch.nn.Module):
         if self.global_cell_decode:
             interp_feats = torch.cat([interp_feats, cell.squeeze(0)], dim=-1)
 
-        return interp_feats
+        return interp_feats, distillation_loss
     
     def interpolate(self, xyz, grids,mode=None, align_corners=True):
         N, _ = xyz.shape
@@ -819,8 +843,8 @@ class DirectVoxGO(torch.nn.Module):
         '''
         feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr)
         # self.k0 = feats
-        ret_dict = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
-        return ret_dict, consistency_loss, cosine_loss
+        ret_dict, distillation_loss = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
+        return ret_dict, consistency_loss, cosine_loss, distillation_loss
     
     def render(self, feats, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
@@ -866,6 +890,7 @@ class DirectVoxGO(torch.nn.Module):
             # lego coarse self.k0 [1, 3, 107, 107, 88]
             #             k0 feature 12
             
+            distillation_loss = 0.
             if self.implicit_voxel_feat:
                 # raise NotImplementedError
                 if self.feat_unfold:
@@ -873,7 +898,7 @@ class DirectVoxGO(torch.nn.Module):
                     for s in ['xy', 'yz', 'zx']:
                         feats[s] = F.unfold(feats[s], 3, padding=1).view(_, c * 9, h, w)
                 if self.liif:
-                    k0 = self.liif_interpolate(ray_pts, feats)
+                    k0, distillation_loss = self.liif_interpolate(ray_pts, feats)
                 else:
                     k0 = self.interpolate(ray_pts, feats)
             else:
@@ -943,7 +968,7 @@ class DirectVoxGO(torch.nn.Module):
                         out=torch.zeros([N], device=weights.device),
                         reduce='sum')
             ret_dict.update({'depth': depth})
-        return ret_dict
+        return ret_dict, distillation_loss
 
 
 ''' Module for the searched coarse geometry
