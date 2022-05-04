@@ -87,7 +87,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
-    feats, _, _ = model.encode_feat(rgb_lr, pose_lr)
+    _, feats, _, _ = model.encode_feat(rgb_lr, pose_lr)
     print(feats['xy'].shape)
     if render_factor!=0:
         HW = np.copy(HW)

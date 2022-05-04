@@ -826,17 +826,17 @@ class DirectVoxGO(torch.nn.Module):
         cosine_loss = 0.
         # if self.compute_cosine:
         for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).sum()
-            cosine_loss += 1/3. * similarity.abs()
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).abs().sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+            cosine_loss += 1/3. * similarity
         for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).sum()
-            cosine_loss += 1/3. * similarity.abs()
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).abs().sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+            cosine_loss += 1/3. * similarity
         for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).sum()
-            cosine_loss += 1/3. * similarity.abs()
+            similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).abs().sum() \
+                + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).abs().sum()
+            cosine_loss += 1/3. * similarity
         
         cosine_loss = cosine_loss / h / w
 
