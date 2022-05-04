@@ -769,9 +769,14 @@ class DirectVoxGO(torch.nn.Module):
 
         return x
     
+    def backbone_encode(self, rgb_lr):
+        xyz_feats = self.encoder(rgb_lr)
+        return xyz_feats
+
     def encode_feat(self, rgb_lr, pose_lr,):
 
-        xyz_feats = self.encoder(rgb_lr)
+        # xyz_feats = self.encoder(rgb_lr)
+        xyz_feats = self.backbone_encode(rgb_lr)
         xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
         if self.closed_map:
             theta = []
@@ -782,7 +787,7 @@ class DirectVoxGO(torch.nn.Module):
             for i in range(3):
                 theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
             
-            theta = torch.stack(theta, 0)
+            theta = torch.stack(theta)
 
             mapped_feats = self.closed_map_transform(xyz_feats, theta)
 
@@ -794,22 +799,18 @@ class DirectVoxGO(torch.nn.Module):
                         poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
                     else:
                         poses.append(pose_lr[j])
-            poses = torch.stack(poses, 0)
+            poses = torch.stack(poses)
             if not isinstance(self.map, dict):
                 mapped_feats = self.map(xyz_feats, poses)
             else:
                 mapped_feats = []
                 for i, s in enumerate(['xy', 'yz', 'zx']):
-                    mapped_feat = self.map[s](xyz_feats[3*i: 3*i+3], poses[3*i: 3*i+3])
+                    mapped_feat = self.map[s](xyz_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
                     mapped_feats.append(mapped_feat)
                 
-                mapped_feats = torch.cat(mapped_feats, 0)
-
-        feats = {
-            'xy': mapped_feats[[0]],
-            'yz': mapped_feats[[3]],
-            'zx': mapped_feats[[6]],
-        }
+                mapped_feats = torch.cat(mapped_feats)
+        
+        # mapped_feats 0-3: xy(im1,im2,im3) 3-6:yz 6-9:zx
 
         _, c, h, w = mapped_feats.shape
         mapped_feats = mapped_feats.reshape(3, 3, c, h, w)
@@ -838,8 +839,15 @@ class DirectVoxGO(torch.nn.Module):
             cosine_loss += 1/3. * similarity.abs()
         
         cosine_loss = cosine_loss / h / w
+
         
-        return feats, consistency_loss, cosine_loss
+        feats = {
+            'xy': mapped_feats[0, 0].unsqueeze(0),
+            'yz': mapped_feats[1, 1].unsqueeze(0),
+            'zx': mapped_feats[2, 2].unsqueeze(0),
+        }
+        
+        return mapped_feats, feats, consistency_loss, cosine_loss
 
 
     def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
@@ -848,7 +856,7 @@ class DirectVoxGO(torch.nn.Module):
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr)
+        mapped_feats, feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr)
         # self.k0 = feats
         ret_dict, distillation_loss = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
         return ret_dict, consistency_loss, cosine_loss, distillation_loss
