@@ -63,9 +63,18 @@ def load_checkpoint(model, optimizer, ckpt_path, no_reload_optimizer):
 
 def load_model(model_class, ckpt_path):
     ckpt = torch.load(ckpt_path)
+    # ckpt['model_kwargs']['load_liif_sd'] = False
+    # ckpt['model_kwargs']['pretrained_state_dict'] = None
+    # ckpt['model_kwargs']['liif_state_dict'] = None
     model = model_class(**ckpt['model_kwargs'])
     model.load_state_dict(ckpt['model_state_dict'])
     print('loaded checkpoints!!!')
+
+    # ckpt = torch.load(ckpt_path)
+    # ckpt['model_kwargs']['use_anchor_liif'] = False
+    # model = model_class(**ckpt['model_kwargs'])
+    # model.load_state_dict({k: v for k, v in ckpt['model_state_dict'].items() if 'anchor_liif' not in k and 'distillation_head' not in k})
+    # print('loaded checkpoints!!!')
     return model
 
 

@@ -87,7 +87,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
-    feats, _, _, _ = model.encode_feat(rgb_lr, pose_lr)
+    feats, _, _ = model.encode_feat(rgb_lr, pose_lr)
     print(feats['xy'].shape)
     if render_factor!=0:
         HW = np.copy(HW)
@@ -119,8 +119,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         # rgb_lr = (rgb_lr - 0.5) / 0.5
         
         render_result_chunks = [
-            # {k: v for k, v in model(rgb_lr, pose_lr, ro, rd, vd, **render_kwargs).items() if k in keys}
-            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs).items() if k in keys}
+            {k: v for k, v in model(rgb_lr, pose_lr, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
+            # {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {

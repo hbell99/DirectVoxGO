@@ -66,7 +66,7 @@ fine_model_and_render = dict(
     name='edsr-baseline' , # 'resnet34', #
     posbase_pe=0,
 
-    rgbnet_depth=3,
+    rgbnet_depth=5,
 
     global_cell_decode=False,
     no_voxel_feat=False,
