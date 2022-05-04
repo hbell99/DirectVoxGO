@@ -493,7 +493,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             param_group['lr'] = param_group['lr'] * decay_factor
             if i_opt_g == 0:
                 _lr = param_group['lr']
-
+        if not isinstance(distillation_loss, float):
+            distillation_loss = distillation_loss.item()
         # check log & save
         if global_step%args.i_print==0:
             eps_time = time.time() - time0
@@ -502,7 +503,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                        f'Loss: {loss.item():.5f} / PSNR: {np.mean(psnr_lst):5.2f} / '
                        f'consistency: {consistency_loss.item():.5f} / '
                        f'cosine: {cosine_loss.item():.5f} / '
-                       f'distillation: {distillation_loss.item():.5f} / '
+                       f'distillation: {distillation_loss:.5f} / '
                        f'lr: {_lr:.6f} / '
                        f'Eps: {eps_time_str}')
             psnr_lst = []

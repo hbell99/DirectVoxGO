@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP, Conv_Mapping
+from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -89,10 +89,11 @@ class DirectVoxGO(torch.nn.Module):
                  closed_map=False,
 
                  compute_consistency=False,
-                 n_mapping=3, 
+                 n_mapping=1, 
                  compute_cosine=False,
 
                  use_anchor_liif=False,
+                 use_siren=False,
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
@@ -233,6 +234,9 @@ class DirectVoxGO(torch.nn.Module):
             'compute_consistency': compute_consistency,
             'compute_cosine': compute_cosine,
             'use_anchor_liif': use_anchor_liif,
+            'load_liif_sd': False,
+            'liif_state_dict': liif_state_dict,
+            'use_siren': use_siren,
         }
 
         if implicit_voxel_feat:
@@ -251,7 +255,7 @@ class DirectVoxGO(torch.nn.Module):
             self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
             self.interp_yz = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
             self.interp_zx = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
-            if load_liif_sd:
+            if load_liif_sd or use_anchor_liif:
                 print('loading pretrained state dict from liif')
                 liif_sd = load_liif_state_dict(liif_state_dict)
                 self.interp_xy = upadate_interp_state_dict(self.interp_xy, liif_sd)
@@ -322,15 +326,18 @@ class DirectVoxGO(torch.nn.Module):
             if global_cell_decode:
                 dim0 += 3
             
-            self.rgbnet = nn.Sequential(
-                nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                *[
-                    nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
-                    for _ in range(rgbnet_depth-2)
-                ],
-                nn.Linear(rgbnet_width, 3),
-            )
-            nn.init.constant_(self.rgbnet[-1].bias, 0)
+            if use_siren:
+                self.rgbnet = SirenRGB_net(rgbnet_depth, dim0, rgbnet_width)
+            else:
+                self.rgbnet = nn.Sequential(
+                    nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
+                    *[
+                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
+                        for _ in range(rgbnet_depth-2)
+                    ],
+                    nn.Linear(rgbnet_width, 3),
+                )
+                nn.init.constant_(self.rgbnet[-1].bias, 0)
             # print('dvgo: feature voxel grid', self.k0.shape)
             print('dvgo: mlp', self.rgbnet)
 
@@ -784,7 +791,7 @@ class DirectVoxGO(torch.nn.Module):
             for i in range(3):
                 for j in range(3):
                     if not isinstance(self.map, dict):
-                        poses.append(self.pose_anchor[i].mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                        poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
                     else:
                         poses.append(pose_lr[j])
             poses = torch.stack(poses, 0)

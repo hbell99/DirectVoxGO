@@ -172,6 +172,7 @@ fine_model_and_render.update(dict(
     n_mapping=1,
 
     use_anchor_liif=False,
+    use_siren=False,
 ))
 
 del deepcopy
