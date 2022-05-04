@@ -67,6 +67,7 @@ def load_model(model_class, ckpt_path):
     # ckpt['model_kwargs']['pretrained_state_dict'] = None
     # ckpt['model_kwargs']['liif_state_dict'] = None
     model = model_class(**ckpt['model_kwargs'])
+    # print(model.state_dict().keys())
     model.load_state_dict(ckpt['model_state_dict'])
     print('loaded checkpoints!!!')
 
@@ -76,6 +77,10 @@ def load_model(model_class, ckpt_path):
     # model.load_state_dict({k: v for k, v in ckpt['model_state_dict'].items() if 'anchor_liif' not in k and 'distillation_head' not in k})
     # print('loaded checkpoints!!!')
     return model
+
+def load_coarse_model_density(model_class, ckpt_path):
+    pass
+
 
 
 ''' Evaluation metrics (ssim, lpips)

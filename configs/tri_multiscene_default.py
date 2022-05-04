@@ -131,6 +131,7 @@ coarse_model_and_render = dict(
     maskout_near_cam_vox=True,    # maskout grid points that between cameras and their near planes
     world_bound_scale=1,          # rescale the BBox enclosing the scene
     stepsize=0.5,                 # sampling stepsize in volume rendering
+    n_scene=1, 
 )
 
 fine_model_and_render = deepcopy(coarse_model_and_render)

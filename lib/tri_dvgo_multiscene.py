@@ -212,7 +212,7 @@ class DirectVoxGO(torch.nn.Module):
         self._set_grid_resolution(num_voxels)
 
         # init density voxel grid
-        self.density = torch.nn.Parameter(torch.zeros([n_scene, 1, 1, *self.world_size]))
+        self.density = torch.nn.Parameter(torch.zeros([n_scene, 1, 1, *self.world_size], device=self.xyz_min.device)) # .to(self.xyz_min.device)
         self.n_scene = n_scene
         # init color representation
         self.rgbnet_kwargs = {
@@ -839,6 +839,14 @@ class DirectVoxGO(torch.nn.Module):
             cosine_loss += 1/3. * similarity
         
         cosine_loss = cosine_loss / h / w
+
+        # cosine_loss = 0.
+        # cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).sum().abs()
+        # cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).sum().abs()
+        # cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).sum().abs()
+
+        # cosine_loss = cosine_loss / h / w
+
 
         
         feats = {

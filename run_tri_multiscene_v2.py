@@ -1,4 +1,5 @@
 import os, sys, copy, glob, json, time, random, argparse
+from socket import inet_aton
 from shutil import copyfile
 from tqdm import tqdm, trange
 
@@ -13,7 +14,7 @@ import torch.nn.functional as F
 
 from torchvision import transforms
 
-from lib import utils, dvgo, tri_dvgo_multiscene, dmpigo, ray_utils
+from lib import utils, dvgo_multiscene, tri_dvgo_multiscene, dmpigo, ray_utils
 from lib.load_data import load_everything
 from lib.load_blender import dataset_dict
 
@@ -199,22 +200,32 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, near, far, **kwargs):
 
 # TODO
 @torch.no_grad()
-def compute_bbox_by_coarse_geo(model_class, model_path, thres):
+def compute_bbox_by_coarse_geo(model_class, model_path, thres, n_scene):
     print('compute_bbox_by_coarse_geo: start')
     eps_time = time.time()
     model = utils.load_model(model_class, model_path)
-    interp = torch.stack(torch.meshgrid(
-        torch.linspace(0, 1, model.density.shape[2]),
-        torch.linspace(0, 1, model.density.shape[3]),
-        torch.linspace(0, 1, model.density.shape[4]),
-    ), -1)
-    dense_xyz = model.xyz_min * (1-interp) + model.xyz_max * interp
-    density = model.grid_sampler(dense_xyz, model.density)
-    alpha = model.activate_density(density)
-    mask = (alpha > thres)
-    active_xyz = dense_xyz[mask]
-    xyz_min = active_xyz.amin(0)
-    xyz_max = active_xyz.amax(0)
+    xyz_min_list = []
+    xyz_max_list = []
+    for scene_id in range(n_scene):
+        interp = torch.stack(torch.meshgrid(
+            torch.linspace(0, 1, model.density[scene_id].shape[-3]),
+            torch.linspace(0, 1, model.density[scene_id].shape[-2]),
+            torch.linspace(0, 1, model.density[scene_id].shape[-1]),
+        ), -1)
+        interp = interp.to(model.xyz_min.device)
+        dense_xyz = model.xyz_min * (1-interp) + model.xyz_max * interp
+        density = model.grid_sampler(dense_xyz, model.density[scene_id])
+        print(density.shape)
+        exit()
+        alpha = model.activate_density(density)
+        mask = (alpha > thres)
+        active_xyz = dense_xyz[mask]
+        xyz_min = active_xyz.amin(0)
+        xyz_max = active_xyz.amax(0)
+        xyz_min_list.append(xyz_min)
+        xyz_max_list.append(xyz_max)
+    xyz_min = torch.tensor(xyz_min_list).min()
+    xyz_max = torch.tensor(xyz_max_list).max()
     print('compute_bbox_by_coarse_geo: xyz_min', xyz_min)
     print('compute_bbox_by_coarse_geo: xyz_max', xyz_max)
     eps_time = time.time() - eps_time
@@ -270,7 +281,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
             if stage == 'coarse':
                 # TODO need a multiscene dvgo model 
-                model = dvgo.DirectVoxGO(
+                model = dvgo_multiscene.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
                     mask_cache_path=coarse_ckpt_path,
@@ -282,7 +293,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     mask_cache_path=coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
-                model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], near)
+                model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], multiscene_dataset.near)
         model = model.to(device)
         optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
     else:
@@ -290,10 +301,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         if cfg.data.ndc:
             model_class = dmpigo.DirectMPIGO
         else:
-            if stage == 'coarse':
-                model_class = dvgo.DirectVoxGO
-            else:
+            if stage == 'fine':
                 model_class = tri_dvgo_multiscene.DirectVoxGO
+            else:
+                model_class = dvgo_multiscene.DirectVoxGO
         model = utils.load_model(model_class, reload_ckpt_path).to(device)
         optimizer = utils.create_optimizer_or_freeze_model(model, cfg_train, global_step=0)
         model, optimizer, start = utils.load_checkpoint(
@@ -385,7 +396,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             cur_voxels = int(cfg_model.num_voxels / (2**n_rest_scales))
             if isinstance(model, tri_dvgo_multiscene.DirectVoxGO):
                 model.scale_volume_grid(cur_voxels)
-            elif isinstance(model, dvgo.DirectVoxGO):
+            elif isinstance(model, dvgo_multiscene.DirectVoxGO):
                 model.scale_volume_grid(cur_voxels)
             elif isinstance(model, dmpigo.DirectMPIGO):
                 model.scale_volume_grid(cur_voxels, model.mpi_depth)
@@ -397,12 +408,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # load data from data loader
         scene_id = np.random.randint(cfg_model.n_scene)
         if cfg_train.ray_sampler == 'in_maskcache':
-            if cfg_train.fixed_lr_idx:
-                j = cfg_train.fixed_lr_idx
-            else:
-                j = torch.randint(multiscene_dataset.all_imgs[scene_id].shape[0], [3])
-            rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
-            pose_lr = multiscene_dataset.all_poses[scene_id][j]
+            if stage == 'fine':
+                if cfg_train.fixed_lr_idx:
+                    j = cfg_train.fixed_lr_idx
+                else:
+                    j = torch.randint(multiscene_dataset.all_imgs[scene_id].shape[0], [3])
+                rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
+                pose_lr = multiscene_dataset.all_poses[scene_id][j]
 
             sel_i = all_batch_index_sampler[scene_id]
             target = all_rgb_tr[scene_id][sel_i]
@@ -411,12 +423,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             viewdirs = all_viewdirs_tr[scene_id][sel_i]
         
         elif cfg_train.ray_sampler == 'random':
-            if cfg_train.fixed_lr_idx:
-                j = cfg_train.fixed_lr_idx
-            else:
-                j = torch.randint(multiscene_dataset.all_imgs[scene_id].shape[0], [3])
-            rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
-            pose_lr = multiscene_dataset.all_poses[scene_id][j]
+            if stage == 'fine':
+                if cfg_train.fixed_lr_idx:
+                    j = cfg_train.fixed_lr_idx
+                else:
+                    j = torch.randint(multiscene_dataset.all_imgs[scene_id].shape[0], [3])
+                rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
+                pose_lr = multiscene_dataset.all_poses[scene_id][j]
 
             i = torch.randint(all_rgb_tr[scene_id].shape[0], [cfg_train.N_rand])
 
@@ -434,8 +447,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         # volume rendering
         if stage == 'coarse':
-            raise NotImplementedError
-            # render_result = model(rays_o, rays_d, viewdirs, global_step=global_step, **render_kwargs)
+            # raise NotImplementedError
+            render_result = model(rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
         else:
             # rgb_lr = rgb_lr.permute(0, 3, 1, 2)
             # assert rgb_lr.shape[1] == 3
@@ -478,9 +491,12 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             rgbper_loss = (rgbper * render_result['weights'].detach()).sum() / len(rays_o)
             loss += cfg_train.weight_rgbper * rgbper_loss
         
-        loss += cfg_train.weight_consistency * consistency_loss
-        loss += cfg_train.weight_cosine * cosine_loss
-        loss += cfg_train.weight_distillation * distillation_loss
+        if stage == 'fine':
+            loss += cfg_train.weight_consistency * consistency_loss
+            loss += cfg_train.weight_cosine * cosine_loss
+            loss += cfg_train.weight_distillation * distillation_loss
+        else:
+            cosine_loss = consistency_loss = distillation_loss = 0.
         loss.backward()
 
         optimizer.step()
@@ -495,14 +511,18 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 _lr = param_group['lr']
         if not isinstance(distillation_loss, float):
             distillation_loss = distillation_loss.item()
+        if not isinstance(consistency_loss, float):
+            consistency_loss = consistency_loss.item()
+        if not isinstance(cosine_loss, float):
+            cosine_loss = cosine_loss.item()
         # check log & save
         if global_step%args.i_print==0:
             eps_time = time.time() - time0
             eps_time_str = f'{eps_time//3600:02.0f}:{eps_time//60%60:02.0f}:{eps_time%60:02.0f}'
             tqdm.write(f'scene_rep_reconstruction ({stage}): iter {global_step:6d} / '
                        f'Loss: {loss.item():.5f} / PSNR: {np.mean(psnr_lst):5.2f} / '
-                       f'consistency: {consistency_loss.item():.5f} / '
-                       f'cosine: {cosine_loss.item():.5f} / '
+                       f'consistency: {consistency_loss:.5f} / '
+                       f'cosine: {cosine_loss:.5f} / '
                        f'distillation: {distillation_loss:.5f} / '
                        f'lr: {_lr:.6f} / '
                        f'Eps: {eps_time_str}')
@@ -564,8 +584,8 @@ def train(args, cfg, multiscene_dataset):
     else:
         if cfg.fine_model_and_render.use_coarse_geo:
             xyz_min_fine, xyz_max_fine = compute_bbox_by_coarse_geo(
-                    model_class=dvgo.DirectVoxGO, model_path=coarse_ckpt_path,
-                    thres=cfg.fine_model_and_render.bbox_thres)
+                    model_class=dvgo_multiscene.DirectVoxGO, model_path=coarse_ckpt_path,
+                    thres=cfg.fine_model_and_render.bbox_thres, n_scene=cfg.fine_model_and_render.n_scene)
         else:
             xyz_min_fine, xyz_max_fine = xyz_min_coarse.clone(), xyz_max_coarse.clone()
     scene_rep_reconstruction(
@@ -629,7 +649,7 @@ if __name__=='__main__':
         print('Export coarse visualization...')
         with torch.no_grad():
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'coarse_last.tar')
-            model = utils.load_model(dvgo.DirectVoxGO, ckpt_path).to(device)
+            model = utils.load_model(dvgo_multiscene.DirectVoxGO, ckpt_path).to(device)
             alpha = model.activate_density(model.density).squeeze().cpu().numpy()
             rgb = torch.sigmoid(model.k0).squeeze().permute(1,2,3,0).cpu().numpy()
         np.savez_compressed(args.export_coarse_only, alpha=alpha, rgb=rgb)
