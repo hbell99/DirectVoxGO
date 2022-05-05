@@ -43,8 +43,8 @@ class DirectVoxGO(torch.nn.Module):
                  implicit_voxel_feat=False, feat_unfold=False, local_ensemble=True, cell_decode=True,
                  **kwargs):
         super(DirectVoxGO, self).__init__()
-        self.register_buffer('xyz_min', torch.Tensor(xyz_min))
-        self.register_buffer('xyz_max', torch.Tensor(xyz_max))
+        self.register_buffer('xyz_min', torch.cuda.FloatTensor(xyz_min))
+        self.register_buffer('xyz_max', torch.cuda.FloatTensor(xyz_max))
         self.fast_color_thres = fast_color_thres
         self.posbase_pe = posbase_pe
 
@@ -67,7 +67,7 @@ class DirectVoxGO(torch.nn.Module):
         self._set_grid_resolution(num_voxels)
 
         # init density voxel grid
-        self.density = torch.nn.Parameter(torch.zeros([n_scene, 1, 1, *self.world_size]))
+        self.density = torch.nn.Parameter(torch.zeros([n_scene, 1, 1, *self.world_size], device=self.xyz_min.device)) #.to(self.xyz_min.device)
 
         # init color representation
         self.rgbnet_kwargs = {
@@ -86,7 +86,7 @@ class DirectVoxGO(torch.nn.Module):
         if rgbnet_dim <= 0:
             # color voxel grid  (coarse stage)
             self.k0_dim = 3
-            self.k0 = torch.nn.Parameter(torch.zeros([n_scene, 1, self.k0_dim, *self.world_size]))
+            self.k0 = torch.nn.Parameter(torch.zeros([n_scene, 1, self.k0_dim, *self.world_size], device=self.xyz_min.device)) #.to(self.xyz_min.device)
             self.rgbnet = None
         else:
             # feature voxel grid + shallow MLP  (fine stage)
@@ -94,7 +94,7 @@ class DirectVoxGO(torch.nn.Module):
                 self.k0_dim = 0
             else:
                 self.k0_dim = rgbnet_dim
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
+            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size], device=self.xyz_min.device)) #.to(self.xyz_min.device)
             self.rgbnet_direct = rgbnet_direct
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
             if posbase_pe > 0:
@@ -224,15 +224,17 @@ class DirectVoxGO(torch.nn.Module):
     @torch.no_grad()
     def maskout_near_cam_vox(self, cam_o, near):
         self_grid_xyz = torch.stack(torch.meshgrid(
-            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+            torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[-3]),
+            torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[-2]),
+            torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[-1]),
         ), -1)
-        nearest_dist = torch.stack([
-            (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
-            for co in cam_o.split(100)  # for memory saving
-        ]).amin(0)
-        self.density[nearest_dist[None,None] <= near] = -100
+        
+        for scene_id in range(len(self.density)):
+            nearest_dist = torch.stack([
+                (self_grid_xyz.unsqueeze(-2) - co).pow(2).sum(-1).sqrt().amin(-1)
+                for co in cam_o[scene_id].split(100)  # for memory saving
+            ]).amin(0)
+            self.density[scene_id][nearest_dist[None,None] <= near] = -100
 
     @torch.no_grad()
     def scale_volume_grid(self, num_voxels):
@@ -241,30 +243,37 @@ class DirectVoxGO(torch.nn.Module):
         self._set_grid_resolution(num_voxels)
         print('dvgo: scale_volume_grid scale world_size from', ori_world_size, 'to', self.world_size)
 
-        self.density = torch.nn.Parameter(
-            F.interpolate(self.density.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
-        if self.k0_dim > 0:
-            self.k0 = torch.nn.Parameter(
-                F.interpolate(self.k0.data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
-        else:
-            self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
-        
+        density = []
+        for i in range(len(self.density)):
+            density.append(F.interpolate(self.density[i].data, size=tuple(self.world_size), mode='trilinear', align_corners=True))
+
+        density = torch.stack(density, dim=0)
+        self.density = torch.nn.Parameter(density)
         if self.mask_cache_path: 
             # loaded from the coarse cache
             mask_cache = MaskCache(
                 path=self.mask_cache_path,
                 mask_cache_thres=self.mask_cache_thres).to(self.xyz_min.device)
             self_grid_xyz = torch.stack(torch.meshgrid(
-                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[2]),
-                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[3]),
-                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[4]),
+                torch.linspace(self.xyz_min[0], self.xyz_max[0], self.density.shape[-3]),
+                torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[-2]),
+                torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[-1]),
             ), -1)
-
-            coarse_mask = mask_cache(self_grid_xyz)
+            
+            coarse_mask = []
+            for scene_id in range(len(self.density)):
+                _coarse_mask = mask_cache(self_grid_xyz, scene_id)
+                coarse_mask.append(_coarse_mask)
         
-        self_alpha = F.max_pool3d(self.activate_density(self.density), kernel_size=3, padding=1, stride=1)[0,0]
+        mask = []
+        for scene_id in range(len(self.density)):
+            self_alpha = F.max_pool3d(self.activate_density(self.density[scene_id]), kernel_size=3, padding=1, stride=1)[0,0]
         
-        mask = coarse_mask & (self_alpha>self.fast_color_thres) if self.mask_cache_path else (self_alpha>self.fast_color_thres)
+            _mask = coarse_mask[scene_id] & (self_alpha>self.fast_color_thres) if self.mask_cache_path else (self_alpha>self.fast_color_thres)
+            mask.append(_mask)
+        
+        mask = torch.stack(mask)
+        assert len(mask.shape) == 4
         self.mask_cache = MaskCache(
             path=None, mask=mask,
             xyz_min=self.xyz_min, xyz_max=self.xyz_max)
@@ -418,7 +427,7 @@ class DirectVoxGO(torch.nn.Module):
             assert len(volumes) == 8
             return inps, volumes
 
-    def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, **render_kwargs):
+    def hit_coarse_geo(self, rays_o, rays_d, near, far, stepsize, scene_id, **render_kwargs):
         '''Check whether the rays hit the solved coarse geometry or not'''
         shape = rays_o.shape[:-1]
         rays_o = rays_o.reshape(-1, 3).contiguous()
@@ -428,7 +437,7 @@ class DirectVoxGO(torch.nn.Module):
                 rays_o, rays_d, self.xyz_min, self.xyz_max, near, far, stepdist)[:3]
         mask_inbbox = ~mask_outbbox
         hit = torch.zeros([len(rays_o)], dtype=torch.bool)
-        hit[ray_id[mask_inbbox][self.mask_cache(ray_pts[mask_inbbox])]] = 1
+        hit[ray_id[mask_inbbox][self.mask_cache(ray_pts[mask_inbbox], scene_id)]] = 1
         return hit.reshape(shape)
 
     def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=0, **render_kwargs):
@@ -456,7 +465,7 @@ class DirectVoxGO(torch.nn.Module):
         step_id = step_id[mask_inbbox]
         return ray_pts, ray_id, step_id
 
-    def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
+    def forward(self, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
@@ -476,13 +485,13 @@ class DirectVoxGO(torch.nn.Module):
 
         # skip known free space
         if self.mask_cache is not None:
-            mask = self.mask_cache(ray_pts)
+            mask = self.mask_cache(ray_pts, scene_id)
             ray_pts = ray_pts[mask]
             ray_id = ray_id[mask]
             step_id = step_id[mask]
 
         # query for alpha w/ post-activation
-        density = self.grid_sampler(ray_pts, self.density)
+        density = self.grid_sampler(ray_pts, self.density[scene_id])
         alpha = self.activate_density(density, interval)
         if self.fast_color_thres > 0:
             mask = (alpha > self.fast_color_thres)
@@ -507,7 +516,7 @@ class DirectVoxGO(torch.nn.Module):
         if not self.rgbnet_full_implicit:
             # lego coarse self.k0 [1, 3, 107, 107, 88]
             #             k0 feature 12
-            inp_k0 = self.k0
+            inp_k0 = self.k0[scene_id]
             if self.implicit_voxel_feat and self.feat_unfold:
                 inp_k0 = self.unfold_feat(self.k0)
 
@@ -563,7 +572,7 @@ class DirectVoxGO(torch.nn.Module):
         rgb_marched = segment_coo(
                 src=(weights.unsqueeze(-1) * rgb),
                 index=ray_id,
-                out=torch.zeros([N, 3]),
+                out=torch.zeros([N, 3], device=weights.device),
                 reduce='sum')
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
@@ -580,7 +589,7 @@ class DirectVoxGO(torch.nn.Module):
                 depth = segment_coo(
                         src=(weights * step_id),
                         index=ray_id,
-                        out=torch.zeros([N]),
+                        out=torch.zeros([N], device=weights.device),
                         reduce='sum')
             ret_dict.update({'depth': depth})
         return ret_dict
@@ -595,29 +604,34 @@ class MaskCache(nn.Module):
         if path is not None:
             st = torch.load(path)
             self.mask_cache_thres = mask_cache_thres
-            density = F.max_pool3d(st['model_state_dict']['density'], kernel_size=3, padding=1, stride=1)
-            alpha = 1 - torch.exp(-F.softplus(density + st['model_kwargs']['act_shift']) * st['model_kwargs']['voxel_size_ratio'])
-            mask = (alpha >= self.mask_cache_thres).squeeze(0).squeeze(0)
-            xyz_min = torch.Tensor(st['model_kwargs']['xyz_min'])
-            xyz_max = torch.Tensor(st['model_kwargs']['xyz_max'])
+            assert len(st['model_state_dict']['density'].shape) == 6
+            mask = []
+            for scene_id in range(len(st['model_state_dict']['density'])):
+                density = F.max_pool3d(st['model_state_dict']['density'][scene_id], kernel_size=3, padding=1, stride=1)
+                alpha = 1 - torch.exp(-F.softplus(density + st['model_kwargs']['act_shift']) * st['model_kwargs']['voxel_size_ratio'])
+                _mask = (alpha >= self.mask_cache_thres).squeeze(0).squeeze(0)
+                mask.append(_mask)
+            mask = torch.stack(mask, dim=0)
+            xyz_min = torch.cuda.FloatTensor(st['model_kwargs']['xyz_min'])
+            xyz_max = torch.cuda.FloatTensor(st['model_kwargs']['xyz_max'])
         else:
             mask = mask.bool()
-            xyz_min = torch.Tensor(xyz_min)
-            xyz_max = torch.Tensor(xyz_max)
+            xyz_min = torch.cuda.FloatTensor(xyz_min)
+            xyz_max = torch.cuda.FloatTensor(xyz_max)
 
         self.register_buffer('mask', mask)
         xyz_len = xyz_max - xyz_min
-        self.register_buffer('xyz2ijk_scale', (torch.Tensor(list(mask.shape)) - 1) / xyz_len)
+        self.register_buffer('xyz2ijk_scale', (torch.cuda.FloatTensor(list(mask[0].shape)) - 1) / xyz_len)
         self.register_buffer('xyz2ijk_shift', -xyz_min * self.xyz2ijk_scale)
 
     @torch.no_grad()
-    def forward(self, xyz):
+    def forward(self, xyz, scene_id):
         '''Skip know freespace
         @xyz:   [..., 3] the xyz in global coordinate.
         '''
         shape = xyz.shape[:-1]
         xyz = xyz.reshape(-1, 3)
-        mask = render_utils_cuda.maskcache_lookup(self.mask, xyz, self.xyz2ijk_scale, self.xyz2ijk_shift)
+        mask = render_utils_cuda.maskcache_lookup(self.mask[scene_id], xyz, self.xyz2ijk_scale, self.xyz2ijk_shift)
         mask = mask.reshape(shape)
         return mask
 

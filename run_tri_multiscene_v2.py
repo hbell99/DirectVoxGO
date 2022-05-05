@@ -1,5 +1,4 @@
 import os, sys, copy, glob, json, time, random, argparse
-from socket import inet_aton
 from shutil import copyfile
 from tqdm import tqdm, trange
 
@@ -215,8 +214,6 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres, n_scene):
         interp = interp.to(model.xyz_min.device)
         dense_xyz = model.xyz_min * (1-interp) + model.xyz_max * interp
         density = model.grid_sampler(dense_xyz, model.density[scene_id])
-        print(density.shape)
-        exit()
         alpha = model.activate_density(density)
         mask = (alpha > thres)
         active_xyz = dense_xyz[mask]
@@ -224,8 +221,10 @@ def compute_bbox_by_coarse_geo(model_class, model_path, thres, n_scene):
         xyz_max = active_xyz.amax(0)
         xyz_min_list.append(xyz_min)
         xyz_max_list.append(xyz_max)
-    xyz_min = torch.tensor(xyz_min_list).min()
-    xyz_max = torch.tensor(xyz_max_list).max()
+    xyz_min = torch.stack(xyz_min_list, 0)
+    xyz_max = torch.stack(xyz_max_list, 0)
+    xyz_min = torch.min(xyz_min, dim=0).values
+    xyz_max = torch.max(xyz_max, dim=0).values
     print('compute_bbox_by_coarse_geo: xyz_min', xyz_min)
     print('compute_bbox_by_coarse_geo: xyz_max', xyz_max)
     eps_time = time.time() - eps_time
