@@ -267,6 +267,7 @@ class DirectVoxGO(torch.nn.Module):
                 'zx': self.interp_yz,
             }
             if use_anchor_liif:
+                print('using anchor')
                 self.anchor_liif = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
                 self.anchor_liif = upadate_interp_state_dict(self.anchor_liif, liif_sd)
                 
@@ -354,6 +355,7 @@ class DirectVoxGO(torch.nn.Module):
                 torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[-2]),
                 torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[-1]),
             ), -1)
+            self_grid_xyz = self_grid_xyz.to(self.xyz_min.device)
             mask = []
             for scene_id in range(len(self.density)):
                 _mask = mask_cache(self_grid_xyz, scene_id)
@@ -764,51 +766,79 @@ class DirectVoxGO(torch.nn.Module):
     
 
     def closed_map_transform(self, feats, theta):
+        theta[..., -1] = 0
         grid = F.affine_grid(theta, feats.size(), align_corners=True)
         x = F.grid_sample(feats, grid, align_corners=True)
+        # import matplotlib.pyplot as plt
+        # plt.imshow(feats[0, 15].detach().cpu().numpy())
+        # plt.savefig('test_ori.png')
+        # plt.imshow(x[0, 15].detach().cpu().numpy())
+        # plt.savefig('test.png')
 
         return x
     
     def backbone_encode(self, rgb_lr):
         xyz_feats = self.encoder(rgb_lr)
         return xyz_feats
+    
+    def sampling_encode(self, xyz_feats, pose_lr):
+        # xyz_feats [3, 64, pose_lr]
+        # pose_lr [3, 4, 4]
+        theta = []
+        for i in range(3):
+            theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
+        for i in range(3):
+            theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
+        for i in range(3):
+            theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
+        
+        theta = torch.stack(theta)
+
+        mapped_feats = self.closed_map_transform(xyz_feats, theta)
+
+        return mapped_feats
+
 
     def encode_feat(self, rgb_lr, pose_lr,):
 
         # xyz_feats = self.encoder(rgb_lr)
         xyz_feats = self.backbone_encode(rgb_lr)
         xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
-        if self.closed_map:
-            theta = []
-            for i in range(3):
-                theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
-            for i in range(3):
-                theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
-            for i in range(3):
-                theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
-            
-            theta = torch.stack(theta)
+        # if self.closed_map:
+        # theta = []
+        # for i in range(3):
+        #     theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
+        # for i in range(3):
+        #     theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
+        # for i in range(3):
+        #     theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
+        
+        # theta = torch.stack(theta)
 
-            mapped_feats = self.closed_map_transform(xyz_feats, theta)
+        # mapped_feats = self.closed_map_transform(xyz_feats, theta)
 
+        mapped_feats = self.sampling_encode(xyz_feats, pose_lr)
+
+        # else:
+        poses = []
+        for i in range(3):
+            for j in range(3):
+                if not isinstance(self.map, dict):
+                    poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                else:
+                    poses.append(pose_lr[j])
+        poses = torch.stack(poses)
+
+        if not isinstance(self.map, dict):
+            # mapped_feats = self.map(xyz_feats, poses)
+            mapped_feats = self.map(mapped_feats, poses)
         else:
-            poses = []
-            for i in range(3):
-                for j in range(3):
-                    if not isinstance(self.map, dict):
-                        poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
-                    else:
-                        poses.append(pose_lr[j])
-            poses = torch.stack(poses)
-            if not isinstance(self.map, dict):
-                mapped_feats = self.map(xyz_feats, poses)
-            else:
-                mapped_feats = []
-                for i, s in enumerate(['xy', 'yz', 'zx']):
-                    mapped_feat = self.map[s](xyz_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
-                    mapped_feats.append(mapped_feat)
-                
-                mapped_feats = torch.cat(mapped_feats)
+            mapped_feats = []
+            for i, s in enumerate(['xy', 'yz', 'zx']):
+                mapped_feat = self.map[s](mapped_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
+                mapped_feats.append(mapped_feat)
+            
+            mapped_feats = torch.cat(mapped_feats)
         
         # mapped_feats 0-3: xy(im1,im2,im3) 3-6:yz 6-9:zx
 

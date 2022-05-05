@@ -111,12 +111,13 @@ def default_conv(in_channels, out_channels, kernel_size, bias=True):
 class ResBlock(nn.Module):
     def __init__(
         self, conv, n_feats, kernel_size,
-        bias=True, bn=False, act=nn.ReLU(True)):
+        bias=True, bn=False, act=nn.ReLU(True), dropout=0.1):
 
         super(ResBlock, self).__init__()
         m = []
         for i in range(2):
             m.append(conv(n_feats, n_feats, kernel_size, bias=bias))
+            m.append(nn.Dropout2d(p=dropout))
             if bn:
                 m.append(nn.BatchNorm2d(n_feats))
             if i == 0:
@@ -167,6 +168,27 @@ class Conv_Mapping(nn.Module):
         out = self.body(feat)
         return out
 
+# class Conv_Mapping_pure(nn.Module):
+#     def __init__(self, in_dim, out_dim=12, kernel_size=3, n_resblocks=3):
+#         super().__init__()
+        
+#         act = nn.ReLU(inplace=True)
+#         m_body = [
+#             ResBlock(
+#                 default_conv, in_dim, kernel_size, act=act
+#             ) for _ in range(n_resblocks)
+#         ]
+#         m_body.append(default_conv(in_dim, out_dim, kernel_size))
+
+#         self.body = nn.Sequential(*m_body)
+    
+#     def forward(self, feat):
+#         # feature: [1, c, h, w]
+#         # pose: [1, 4, 4]
+#         # out: [1, out_dim, h, w] 
+
+#         out = self.body(feat)
+#         return out
 
 class Swish(nn.Module):
     def __init__(self):
