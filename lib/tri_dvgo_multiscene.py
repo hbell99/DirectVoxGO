@@ -866,6 +866,11 @@ class DirectVoxGO(torch.nn.Module):
                 for j in range(3):
                     consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
+        feats = {
+            'xy': mapped_feats[0, 0].unsqueeze(0),
+            'yz': mapped_feats[1, 1].unsqueeze(0),
+            'zx': mapped_feats[2, 2].unsqueeze(0),
+        }
         
         if self.cosine_v1:
             cosine_loss = 0.
@@ -886,17 +891,16 @@ class DirectVoxGO(torch.nn.Module):
             cosine_loss = cosine_loss / h / w
         elif self.cosine_v2:
             cosine_loss = 0.
-            cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).sum().abs()
-            cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).sum().abs()
-            cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).sum().abs()
+            cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).abs().sum()
+            cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).abs().sum()
 
             cosine_loss = cosine_loss / h / w
-            
-            feats = {
-                'xy': mapped_feats[0, 0].unsqueeze(0),
-                'yz': mapped_feats[1, 1].unsqueeze(0),
-                'zx': mapped_feats[2, 2].unsqueeze(0),
-            }
+        else: # mse no stop gradient
+            cosine_loss = 0.
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['xy'][0], feats['yz'][0])
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['yz'][0], feats['zx'][0])
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['zx'][0], feats['xy'][0])
+
         
         return mapped_feats, feats, consistency_loss, cosine_loss
 
