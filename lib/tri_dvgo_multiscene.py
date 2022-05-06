@@ -95,6 +95,9 @@ class DirectVoxGO(torch.nn.Module):
                  use_anchor_liif=False,
                  use_siren=False,
 
+                 cosine_v1=True,
+                 cosine_v2=False,
+
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
 
@@ -117,6 +120,8 @@ class DirectVoxGO(torch.nn.Module):
         self.closed_map=closed_map
         self.compute_consistency = compute_consistency
         self.compute_cosine = compute_cosine
+        self.cosine_v1 = cosine_v1
+        self.cosine_v2 = cosine_v2
 
         self.use_anchor_liif = use_anchor_liif
 
@@ -180,6 +185,10 @@ class DirectVoxGO(torch.nn.Module):
         
         self.register_buffer('xyz_min', torch.cuda.FloatTensor(xyz_min))
         self.register_buffer('xyz_max', torch.cuda.FloatTensor(xyz_max))
+        print()
+        print('dvgo: xyz_min', self.xyz_min)
+        print('dvgo: xyz_max', self.xyz_max)
+        print('dvgo: cosine_v1', cosine_v1, 'cosine_v2', cosine_v2)
         self.fast_color_thres = fast_color_thres
         self.posbase_pe = posbase_pe
 
@@ -237,6 +246,9 @@ class DirectVoxGO(torch.nn.Module):
             'load_liif_sd': False,
             'liif_state_dict': liif_state_dict,
             'use_siren': use_siren,
+            'cosine_v1': cosine_v1,
+            'cosine_v2': cosine_v2,
+
         }
 
         if implicit_voxel_feat:
@@ -333,7 +345,7 @@ class DirectVoxGO(torch.nn.Module):
                 self.rgbnet = nn.Sequential(
                     nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
                     *[
-                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
+                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.Dropout(p=0.1), nn.ReLU(inplace=True))
                         for _ in range(rgbnet_depth-2)
                     ],
                     nn.Linear(rgbnet_width, 3),
@@ -855,37 +867,36 @@ class DirectVoxGO(torch.nn.Module):
                     consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
         
-        cosine_loss = 0.
-        # if self.compute_cosine:
-        for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).abs().sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
-            cosine_loss += 1/3. * similarity
-        for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).abs().sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
-            cosine_loss += 1/3. * similarity
-        for k in range(3):
-            similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).abs().sum() \
-                + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).abs().sum()
-            cosine_loss += 1/3. * similarity
-        
-        cosine_loss = cosine_loss / h / w
+        if self.cosine_v1:
+            cosine_loss = 0.
+            # if self.compute_cosine:
+            for k in range(3):
+                similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).abs().sum() \
+                    + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+                cosine_loss += 1/3. * similarity
+            for k in range(3):
+                similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).abs().sum() \
+                    + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+                cosine_loss += 1/3. * similarity
+            for k in range(3):
+                similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).abs().sum() \
+                    + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).abs().sum()
+                cosine_loss += 1/3. * similarity
+            
+            cosine_loss = cosine_loss / h / w
+        elif self.cosine_v2:
+            cosine_loss = 0.
+            cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).sum().abs()
+            cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).sum().abs()
+            cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).sum().abs()
 
-        # cosine_loss = 0.
-        # cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).sum().abs()
-        # cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).sum().abs()
-        # cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).sum().abs()
-
-        # cosine_loss = cosine_loss / h / w
-
-
-        
-        feats = {
-            'xy': mapped_feats[0, 0].unsqueeze(0),
-            'yz': mapped_feats[1, 1].unsqueeze(0),
-            'zx': mapped_feats[2, 2].unsqueeze(0),
-        }
+            cosine_loss = cosine_loss / h / w
+            
+            feats = {
+                'xy': mapped_feats[0, 0].unsqueeze(0),
+                'yz': mapped_feats[1, 1].unsqueeze(0),
+                'zx': mapped_feats[2, 2].unsqueeze(0),
+            }
         
         return mapped_feats, feats, consistency_loss, cosine_loss
 

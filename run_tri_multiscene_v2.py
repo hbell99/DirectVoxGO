@@ -119,8 +119,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         # rgb_lr = (rgb_lr - 0.5) / 0.5
         
         render_result_chunks = [
-            {k: v for k, v in model(rgb_lr, pose_lr, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
-            # {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
+            # {k: v for k, v in model(rgb_lr, pose_lr, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
+            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -197,7 +197,7 @@ def compute_bbox_by_cam_frustrm(args, cfg, HW, Ks, poses, near, far, **kwargs):
     print('compute_bbox_by_cam_frustrm: finish')
     return xyz_min, xyz_max
 
-# TODO
+
 @torch.no_grad()
 def compute_bbox_by_coarse_geo(model_class, model_path, thres, n_scene):
     print('compute_bbox_by_coarse_geo: start')
@@ -279,7 +279,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             if len(cfg_train.pg_scale) and reload_ckpt_path is None:
                 num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
             if stage == 'coarse':
-                # TODO need a multiscene dvgo model 
                 model = dvgo_multiscene.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
@@ -624,7 +623,6 @@ if __name__=='__main__':
     multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx, down=cfg.data.down)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
-    # TODO
     if args.export_bbox_and_cams_only:
         print('Export bbox and cameras...')
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)

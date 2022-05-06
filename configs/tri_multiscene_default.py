@@ -174,6 +174,9 @@ fine_model_and_render.update(dict(
 
     use_anchor_liif=False,
     use_siren=False,
+
+    cosine_v1=True,
+    cosine_v2=False,
 ))
 
 del deepcopy

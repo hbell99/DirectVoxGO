@@ -52,12 +52,12 @@ class NeRF_MLP(nn.Module):
 
 
 class Mapping(nn.Module):
-    def __init__(self, in_dim, out_dim=12, depth=1, width=64):
+    def __init__(self, in_dim, out_dim=12, depth=1, width=64, dropout=0.1):
         super().__init__()
         self.feat_linears = nn.Sequential(
             nn.Linear(in_dim, width),  nn.ReLU(inplace=True),  
             *[
-                nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True))
+                nn.Sequential(nn.Linear(width, width), nn.Dropout(p=dropout), nn.ReLU(inplace=True))
                 for _ in range(depth-2)
             ]
         )
@@ -86,12 +86,12 @@ class Mapping(nn.Module):
 
 
 class Interp_MLP(nn.Module):
-    def __init__(self, in_dim, out_dim, width=128, depth=5):
+    def __init__(self, in_dim, out_dim, width=128, depth=5, dropout=0.1):
         super(Interp_MLP, self).__init__()
         self.model = nn.Sequential(
             *[nn.Linear(in_dim, width), nn.ReLU(inplace=True)],
             *[
-                nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True))
+                nn.Sequential(nn.Linear(width, width), nn.Dropout(p=dropout), nn.ReLU(inplace=True))
                 for _ in range(depth-2)
             ],
             nn.Linear(width, out_dim),
