@@ -518,6 +518,7 @@ class DirectVoxGO(torch.nn.Module):
                 torch.linspace(self.xyz_min[1], self.xyz_max[1], self.density.shape[-2]),
                 torch.linspace(self.xyz_min[2], self.xyz_max[2], self.density.shape[-1]),
             ), -1)
+            self_grid_xyz = self_grid_xyz.to(self.xyz_min.device)
             
             coarse_mask = []
             for scene_id in range(len(self.density)):
@@ -782,8 +783,9 @@ class DirectVoxGO(torch.nn.Module):
         return xyz_feats
     
     def sampling_encode(self, xyz_feats, pose_lr):
-        # xyz_feats [3, 64, pose_lr]
+        # xyz_feats [9, 64, pose_lr]
         # pose_lr [3, 4, 4]
+        xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
         theta = []
         for i in range(3):
             theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
@@ -803,7 +805,7 @@ class DirectVoxGO(torch.nn.Module):
 
         # xyz_feats = self.encoder(rgb_lr)
         xyz_feats = self.backbone_encode(rgb_lr)
-        xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
+        
         # if self.closed_map:
         # theta = []
         # for i in range(3):
