@@ -192,6 +192,9 @@ def get_training_rays_in_maskcache_sampling_for_multiscene(rgb_tr_ori, train_pos
         rays_o, rays_d, viewdirs = get_rays_of_a_view(
                 H=H, W=W, K=K, c2w=c2w, ndc=ndc,
                 inverse_y=inverse_y, flip_x=flip_x, flip_y=flip_y)
+        rays_o = rays_o.to('cuda')
+        rays_d = rays_d.to('cuda')
+        viewdirs = rays_d.to('cuda')
         mask = torch.empty(img.shape[:2], device=DEVICE, dtype=torch.bool)
         for i in range(0, img.shape[0], CHUNK):
             mask[i:i+CHUNK] = model.hit_coarse_geo(

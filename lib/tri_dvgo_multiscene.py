@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net
+from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -95,6 +95,8 @@ class DirectVoxGO(torch.nn.Module):
                  use_anchor_liif=False,
                  use_siren=False,
 
+                 use_nl=False,
+
                  cosine_v1=True,
                  cosine_v2=False,
 
@@ -114,6 +116,7 @@ class DirectVoxGO(torch.nn.Module):
         self.feat_pe = feat_pe
         self.feat_fourier = feat_fourier
         self.n_mapping = n_mapping
+        self.use_nl = use_nl
 
         self.mlp_map = mlp_map
         self.conv_map=conv_map
@@ -148,6 +151,11 @@ class DirectVoxGO(torch.nn.Module):
         
         else:
             raise NotImplementedError
+        
+        if self.use_nl:
+            print('used nl block')
+            self.nl_block = NLBlockND(feat_channels=n_feats, density_channels=1)
+
         if mlp_map:
             if n_mapping == 1:
                 self.map = Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, depth=map_depth, width=map_width)
@@ -248,7 +256,7 @@ class DirectVoxGO(torch.nn.Module):
             'use_siren': use_siren,
             'cosine_v1': cosine_v1,
             'cosine_v2': cosine_v2,
-
+            'use_nl': use_nl,
         }
 
         if implicit_voxel_feat:
@@ -794,26 +802,93 @@ class DirectVoxGO(torch.nn.Module):
         xyz_feats = self.encoder(rgb_lr)
         return xyz_feats
     
-    def sampling_encode(self, xyz_feats, pose_lr):
-        # xyz_feats [9, 64, pose_lr]
+    def sampling_encode(self, xyz_feats, pose_lr, is_test=False):
+        # xyz_feats [3, 64, pose_lr]
         # pose_lr [3, 4, 4]
-        xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
+        if not is_test:
+            xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200]
         theta = []
-        for i in range(3):
-            theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
-        for i in range(3):
-            theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
-        for i in range(3):
-            theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
+        if not is_test:
+            for i in range(3):
+                theta.append(pose_lr[i][[0, 1]][:, [0, 1, 3]]) # xy
+            for i in range(3):
+                theta.append(pose_lr[i][[1, 2]][:, [1, 2, 3]]) # yz
+            for i in range(3):
+                theta.append(pose_lr[i][[2, 0]][:, [2, 0, 3]]) # zx
+        else:
+            theta.append(pose_lr[0][[0, 1]][:, [0, 1, 3]])
+            theta.append(pose_lr[1][[1, 2]][:, [1, 2, 3]])
+            theta.append(pose_lr[2][[2, 0]][:, [2, 0, 3]])
         
         theta = torch.stack(theta)
 
         mapped_feats = self.closed_map_transform(xyz_feats, theta)
 
         return mapped_feats
+    
+    def nl_density_attention(self, xyz_feats, scene_id, is_test=False):
+        # xyz_feats [3, 64, h, w]
+        _, _, h, w = xyz_feats.shape
+        density = self.density[scene_id]
+        Nx, Ny, Nz = density.shape[-3:]
+        alpha = self.activate_density(density)
+
+        alpha_xy = torch.cumsum(F.interpolate(alpha, (h, w, Nz), mode='trilinear', align_corners=True), dim=-1)[..., -1].reshape(1, 1, h, w) # xy
+        if not is_test:
+            alpha_xy = alpha_xy.repeat(3, 1, 1, 1)
+        alpha_yz = torch.cumsum(F.interpolate(alpha, (Nx, h, w), mode='trilinear', align_corners=True), dim=-3)[:, :, -1, :, :].reshape(1, 1, h, w) # xy
+        if not is_test:
+            alpha_yz = alpha_yz.repeat(3, 1, 1, 1)
+        alpha_zx = torch.cumsum(F.interpolate(alpha, (h, Ny, w), mode='trilinear', align_corners=True), dim=-2)[:, :, :, -1, :].reshape(1, 1, h, w) # xy
+        if not is_test:
+            alpha_zx = alpha_zx.repeat(3, 1, 1, 1)
+
+        if not is_test:
+            xyz_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0) # [9, 64, 200, 200] img1, img2, img3, img1, img2, img3, img1, img2, img3 
+        alpha_feats = torch.cat([alpha_xy, alpha_yz, alpha_zx], 0)
+        mapped_feats = self.nl_block(xyz_feats, alpha_feats)
+
+        return mapped_feats
+    
+    def encode_feat_inference(self, rgb_lr, pose_lr, scene_id):
+        xyz_feats = self.backbone_encode(rgb_lr)
+        if self.closed_map:
+            mapped_feats = self.sampling_encode(xyz_feats, pose_lr, is_test=True)
+        elif self.use_nl:
+            mapped_feats = self.nl_density_attention(xyz_feats, scene_id, is_test=True)
+        else:
+            mapped_feats = xyz_feats
+        
+        if self.conv_map or self.mlp_map:
+            poses = []
+            for i in range(3):
+                if not isinstance(self.map, dict):
+                    poses.append(self.pose_anchor[i].to(pose_lr[i].device).mm(torch.linalg.inv(pose_lr[i]))) # one mapping networks, input Anchor and Pose
+                else:
+                    poses.append(pose_lr[i])
+            poses = torch.stack(poses)
+
+            if not isinstance(self.map, dict):
+                # mapped_feats = self.map(xyz_feats, poses)
+                mapped_feats = self.map(mapped_feats, poses)
+            else:
+                mapped_feats = []
+                for i, s in enumerate(['xy', 'yz', 'zx']):
+                    mapped_feat = self.map[s](mapped_feats[i: i+1], poses[i: i+1]) # img1, img2, img3, pose1, pose2, pose3
+                    mapped_feats.append(mapped_feat)
+                
+                mapped_feats = torch.cat(mapped_feats)
+
+        feats = {
+            'xy': mapped_feats[0].unsqueeze(0),
+            'yz': mapped_feats[1].unsqueeze(0),
+            'zx': mapped_feats[2].unsqueeze(0),
+        }
+
+        return feats
 
 
-    def encode_feat(self, rgb_lr, pose_lr,):
+    def encode_feat(self, rgb_lr, pose_lr, scene_id):
 
         # xyz_feats = self.encoder(rgb_lr)
         xyz_feats = self.backbone_encode(rgb_lr)
@@ -830,29 +905,34 @@ class DirectVoxGO(torch.nn.Module):
         # theta = torch.stack(theta)
 
         # mapped_feats = self.closed_map_transform(xyz_feats, theta)
-
-        mapped_feats = self.sampling_encode(xyz_feats, pose_lr)
-
-        # else:
-        poses = []
-        for i in range(3):
-            for j in range(3):
-                if not isinstance(self.map, dict):
-                    poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
-                else:
-                    poses.append(pose_lr[j])
-        poses = torch.stack(poses)
-
-        if not isinstance(self.map, dict):
-            # mapped_feats = self.map(xyz_feats, poses)
-            mapped_feats = self.map(mapped_feats, poses)
+        if self.closed_map:
+            mapped_feats = self.sampling_encode(xyz_feats, pose_lr)
+        elif self.use_nl:
+            mapped_feats = self.nl_density_attention(xyz_feats, scene_id)
         else:
-            mapped_feats = []
-            for i, s in enumerate(['xy', 'yz', 'zx']):
-                mapped_feat = self.map[s](mapped_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
-                mapped_feats.append(mapped_feat)
-            
-            mapped_feats = torch.cat(mapped_feats)
+            mapped_feats = torch.cat([xyz_feats, xyz_feats, xyz_feats], 0)
+        # mapped_feats = self.sampling_encode(xyz_feats, pose_lr)
+
+        if self.conv_map or self.mlp_map:
+            poses = []
+            for i in range(3):
+                for j in range(3):
+                    if not isinstance(self.map, dict):
+                        poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                    else:
+                        poses.append(pose_lr[j])
+            poses = torch.stack(poses)
+
+            if not isinstance(self.map, dict):
+                # mapped_feats = self.map(xyz_feats, poses)
+                mapped_feats = self.map(mapped_feats, poses)
+            else:
+                mapped_feats = []
+                for i, s in enumerate(['xy', 'yz', 'zx']):
+                    mapped_feat = self.map[s](mapped_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
+                    mapped_feats.append(mapped_feat)
+                
+                mapped_feats = torch.cat(mapped_feats)
         
         # mapped_feats 0-3: xy(im1,im2,im3) 3-6:yz 6-9:zx
 
@@ -891,18 +971,19 @@ class DirectVoxGO(torch.nn.Module):
             cosine_loss = cosine_loss / h / w
         elif self.cosine_v2:
             cosine_loss = 0.
+            cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).abs().sum()
             cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).abs().sum()
             cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).abs().sum()
 
             cosine_loss = cosine_loss / h / w
-        else: # mse no stop gradient
+        else: # stop gradient
             cosine_loss = 0.
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['xy'][0], feats['yz'][0])
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['yz'][0], feats['zx'][0])
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['zx'][0], feats['xy'][0])
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['xy'][0].detach(), feats['yz'][0])
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['yz'][0].detach(), feats['zx'][0])
+            cosine_loss += 1/3. * 1 / F.mse_loss(feats['zx'][0].detach(), feats['xy'][0])
 
         
-        return mapped_feats, feats, consistency_loss, cosine_loss
+        return feats, consistency_loss, cosine_loss
 
 
     def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
@@ -911,7 +992,7 @@ class DirectVoxGO(torch.nn.Module):
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        mapped_feats, feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr)
+        feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr, scene_id)
         # self.k0 = feats
         ret_dict, distillation_loss = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
         return ret_dict, consistency_loss, cosine_loss, distillation_loss

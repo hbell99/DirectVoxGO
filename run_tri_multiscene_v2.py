@@ -87,7 +87,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
     print('rbg_lr shape:', rgb_lr.shape)
     # assert rgb_lr.shape[-1] == 200
-    _, feats, _, _ = model.encode_feat(rgb_lr, pose_lr)
+    # _, feats, _, _ = model.encode_feat(rgb_lr, pose_lr, scene_id)
+    feats = model.encode_feat_inference(rgb_lr, pose_lr, scene_id)
     print(feats['xy'].shape)
     if render_factor!=0:
         HW = np.copy(HW)
@@ -102,7 +103,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_alex = []
     lpips_vgg = []
 
-    for i, c2w in enumerate(tqdm(render_poses[:50])):
+    for i, c2w in enumerate(tqdm(render_poses)):
 
         H, W = HW[i]
         K = Ks[i]
@@ -288,7 +289,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 model = tri_dvgo_multiscene.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
-                    mask_cache_path=coarse_ckpt_path,
+                    mask_cache_path=None, # coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
                 model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], multiscene_dataset.near)
@@ -460,7 +461,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
             
             if cfg_train.dynamic_downsampling:
-                down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
+                down = torch.rand([1])[0] * (cfg_train.dynamic_down - 1.5) + 1.5
                 h, w = rgb_lr[0].shape[:2]
                 h, w = int(h / down), int(w / down)
                 rgb_lr_down = torch.zeros((rgb_lr.shape[0], h, w, 3))
@@ -490,9 +491,12 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             loss += cfg_train.weight_rgbper * rgbper_loss
         
         if stage == 'fine':
-            loss += cfg_train.weight_consistency * consistency_loss
-            loss += cfg_train.weight_cosine * cosine_loss
-            loss += cfg_train.weight_distillation * distillation_loss
+            if cfg_train.weight_consistency > 0:
+                loss += cfg_train.weight_consistency * consistency_loss
+            if cfg_train.weight_cosine > 0:
+                loss += cfg_train.weight_cosine * cosine_loss
+            if cfg_train.weight_distillation > 0:
+                loss += cfg_train.weight_distillation * distillation_loss
         else:
             cosine_loss = consistency_loss = distillation_loss = 0.
         loss.backward()
@@ -697,6 +701,7 @@ if __name__=='__main__':
             },
         }
     scene2index = multiscene_dataset.scene2index
+    print('scene2index', scene2index)
 
     del multiscene_dataset
 
