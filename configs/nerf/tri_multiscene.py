@@ -1,6 +1,6 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = '1conv+stn_liif_scratch_coarse+fine_consistency+cosine_v2_posfourier_wb1.2'# '3conv_liif_scratch_coarse+fine' 
+expname = '1nl_conv_att_lego_cons+mse'# '3conv_liif_scratch_coarse+fine' 
 basedir = './logs/tri_dvgo_multiscene/nerf_synthetic/'
 
 data = dict(
@@ -23,11 +23,13 @@ coarse_train = dict(
 
 coarse_model_and_render = dict(
     n_scene=8, 
+    bbox_thres=1e-3, 
+    mask_cache_thres=1e-3, 
 )
 
 fine_train = dict(
-    N_iters=200000,
-    N_rand=8192,
+    N_iters=400000,
+    N_rand=2048,
     lrate_k0=0, 
     lrate_map=5e-4, #1e-4,
     lrate_encoder=1e-4,
@@ -40,10 +42,12 @@ fine_train = dict(
     lrate_map_yz=5e-4,
     lrate_map_zx=5e-4,
 
+    lrate_nl_block=1e-4, 
+
     lrate_distillation_head=1e-4,
 
     lrate_decay=400,
-    pg_scale=[8000, 16000, 24000, 32000],
+    pg_scale=[16000, 32000, 48000, 64000],
     fixed_lr_idx=[], #[34, 49, 63],
     fixed_lr_idx_render = [34, 49, 63], 
     ray_sampler='random',
@@ -66,7 +70,7 @@ fine_model_and_render = dict(
     local_ensemble=True,
     use_coarse_geo=True,
     rgbnet_dim=64,
-    name='edsr-baseline' , # 'resnet34', #
+    name='edsr-baseline', # 'resnet34', # 'resnet34', #
     posbase_pe=10,
 
     rgbnet_depth=5,
@@ -102,11 +106,14 @@ fine_model_and_render = dict(
 
     use_anchor_liif=False,
     use_siren=False,
+    use_nl=True,
 
-    stepsize=0.25,
+    stepsize=0.5,
 
     cosine_v1=False,
-    cosine_v2=True,
+    cosine_v2=False,
 
-    world_bound_scale=1.2, # 1.05
+    world_bound_scale=1.05, # 1.05
+    # bbox_thres=1e-4, 
+    # mask_cache_thres=1e-4, 
 )

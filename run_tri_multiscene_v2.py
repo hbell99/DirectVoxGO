@@ -289,7 +289,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 model = tri_dvgo_multiscene.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
-                    mask_cache_path=None, # coarse_ckpt_path,
+                    mask_cache_path=None, #coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
                 model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], multiscene_dataset.near)

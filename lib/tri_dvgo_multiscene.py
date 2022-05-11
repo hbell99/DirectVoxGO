@@ -127,6 +127,7 @@ class DirectVoxGO(torch.nn.Module):
         self.cosine_v2 = cosine_v2
 
         self.use_anchor_liif = use_anchor_liif
+        print('n_scene', n_scene)
 
         if name == 'edsr-baseline':
             self.encoder_kwargs = {
@@ -367,6 +368,7 @@ class DirectVoxGO(torch.nn.Module):
         self.mask_cache_path = mask_cache_path
         self.mask_cache_thres = mask_cache_thres
         if mask_cache_path is not None and mask_cache_path:
+            print('mask_cache_path', mask_cache_path)
             mask_cache = MaskCache(
                     path=mask_cache_path,
                     mask_cache_thres=mask_cache_thres).to(self.xyz_min.device)
