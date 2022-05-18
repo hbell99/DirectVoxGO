@@ -54,7 +54,7 @@ def config_parser():
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=500,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=50000,
                         help='frequency of weight ckpt saving')
     return parser
 
@@ -66,6 +66,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
+    model.eval()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if fixed_lr_imgs:
         rgb_lr = torch.stack(fixed_lr_imgs, dim=0)
@@ -76,6 +77,12 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         j = torch.randint(lr_poses.shape[0], [3])
         rgb_lr = lr_imgs[j]
         pose_lr = lr_poses[j]
+    rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = ray_utils.get_training_rays(
+                rgb_tr=rgb_lr,
+                train_poses=pose_lr,
+                HW=HW[:3], Ks=Ks[:3], ndc=ndc, inverse_y=render_kwargs['inverse_y'],
+                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
+    rgb_lr = torch.cat([rgb_lr, rays_o_tr, rays_d_tr], dim=-1) # , viewdirs_tr
     rgb_lr = rgb_lr.permute(0, 3, 1, 2)
     h, w = rgb_lr.shape[-2:]
     h, w = h // render_kwargs['render_down'], w // render_kwargs['render_down']
@@ -121,7 +128,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         
         render_result_chunks = [
             # {k: v for k, v in model(rgb_lr, pose_lr, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
-            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
+            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, res=[800, 800], **render_kwargs)[0].items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -286,10 +293,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     mask_cache_path=coarse_ckpt_path,
                     **model_kwargs)
             else:
+                m_path = None if cfg_model.n_scene == 8 else coarse_ckpt_path
                 model = tri_dvgo_multiscene.DirectVoxGO(
                     xyz_min=xyz_min, xyz_max=xyz_max,
                     num_voxels=num_voxels,
-                    mask_cache_path=None, #coarse_ckpt_path,
+                    mask_cache_path=m_path, #coarse_ckpt_path,
                     **model_kwargs)
             if cfg_model.maskout_near_cam_vox:
                 model.maskout_near_cam_vox(multiscene_dataset.all_poses[:, :, :3, 3], multiscene_dataset.near)
@@ -430,6 +438,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                 rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
                 pose_lr = multiscene_dataset.all_poses[scene_id][j]
 
+                rays_o_lr = all_rays_o_tr[scene_id][j]
+                rays_d_lr = all_rays_d_tr[scene_id][j]
+                viewdirs_lr = all_viewdirs_tr[scene_id][j]
+                rgb_lr = torch.cat([rgb_lr, rays_o_lr, rays_d_lr], dim=-1)
+
             i = torch.randint(all_rgb_tr[scene_id].shape[0], [cfg_train.N_rand])
 
             sel_r = torch.randint(all_rgb_tr[scene_id].shape[1], [cfg_train.N_rand])
@@ -447,29 +460,16 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # volume rendering
         if stage == 'coarse':
             # raise NotImplementedError
-            render_result = model(rays_o, rays_d, viewdirs, scene_id, global_step=global_step, **render_kwargs)
+            render_result = model(rays_o, rays_d, viewdirs, scene_id, res=[200, 200], global_step=global_step, **render_kwargs)
         else:
-            # rgb_lr = rgb_lr.permute(0, 3, 1, 2)
-            # assert rgb_lr.shape[1] == 3
-            # if cfg_train.dynamic_downsampling:
-            #     down = torch.rand([1])[0] * (cfg_train.dynamic_down - 2) + 2
-            #     h, w = rgb_lr.shape[-2:]
-            #     h, w = int(h / down), int(w / down)
-            #     resize = transforms.Resize([h, w])
-            #     rgb_lr = resize(rgb_lr)
-            # rgb_lr = (rgb_lr - 0.5) / 0.5
-
-            
-            if cfg_train.dynamic_downsampling:
-                down = torch.rand([1])[0] * (cfg_train.dynamic_down - 1.5) + 1.5
-                h, w = rgb_lr[0].shape[:2]
-                h, w = int(h / down), int(w / down)
-                rgb_lr_down = torch.zeros((rgb_lr.shape[0], h, w, 3))
-                for i in range(rgb_lr.shape[0]):
-                    rgb_lr_down[i] = torch.tensor(cv2.resize(rgb_lr[i].numpy(), (w, h), interpolation=cv2.INTER_AREA))
-                rgb_lr = rgb_lr_down
             rgb_lr = rgb_lr.permute(0, 3, 1, 2)
-            assert rgb_lr.shape[1] == 3
+            assert rgb_lr.shape[1] == 9
+            if cfg_train.dynamic_downsampling:
+                down = torch.rand([1])[0] * (cfg_train.dynamic_down - 1) + 1
+                h, w = rgb_lr.shape[-2:]
+                h, w = int(h / down), int(w / down)
+                resize = transforms.Resize([h, w])
+                rgb_lr = resize(rgb_lr)
             rgb_lr = (rgb_lr - 0.5) / 0.5
             
             rgb_lr = rgb_lr.to(device)
@@ -479,8 +479,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # gradient descent step
         optimizer.zero_grad(set_to_none=True)
         rgb_loss = F.mse_loss(render_result['rgb_marched'], target)
+        # rgb_loss = F.smooth_l1_loss(render_result['rgb_marched'], target)
         loss = cfg_train.weight_main * rgb_loss
         psnr = utils.mse2psnr(loss.detach())
+        # psnr = utils.mse2psnr(F.mse_loss(render_result['rgb_marched'], target).detach())
         if cfg_train.weight_entropy_last > 0:
             pout = render_result['alphainv_last'].clamp(1e-6, 1-1e-6)
             entropy_last_loss = -(pout*torch.log(pout) + (1-pout)*torch.log(1-pout)).mean()
@@ -713,10 +715,10 @@ if __name__=='__main__':
         cfg.data.datadir = os.path.join(basedir, s)
         scene_id = scene2index[s]
         data_dict = load_everything(args=args, cfg=cfg)
-        
+        render_down = render_viewpoints_kwargs['render_kwargs']['render_down']
         # render trainset and eval
         if args.render_train:
-            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}')
+            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_{ckpt_name}_testdown_{render_down}', s)
             os.makedirs(testsavedir, exist_ok=True)
             rgbs, depths = render_viewpoints(
                     render_poses=data_dict['poses'][data_dict['i_train']],

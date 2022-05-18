@@ -176,7 +176,7 @@ def make_edsr_baseline(n_resblocks=16, n_feats=64, res_scale=1,
     args.no_upsampling = no_upsampling
 
     args.rgb_range = rgb_range
-    args.n_colors = 3
+    args.n_colors = 9
     return EDSR(args)
 
 

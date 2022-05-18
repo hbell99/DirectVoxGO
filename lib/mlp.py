@@ -167,11 +167,16 @@ class Conv_Mapping(nn.Module):
         # )
         # self.out_linear = nn.Linear(width, out_dim)
         act = nn.ReLU(inplace=True)
-        print('!!!!ConBlock!!!!!')
-        # print('!!!!ResBlock!!!!!')
+        m_head = [default_conv(in_dim, in_dim, kernel_size)]
+        m_head.append(nn.MaxPool2d(kernel_size=(2, 2)))
+        
+        self.head = nn.Sequential(*m_head)
+        
+        # print('!!!!ConBlock!!!!!')
+        print('!!!!ResBlock!!!!!')
         m_body = [
-            # ResBlock(
-            ConvBlock(
+            ResBlock(
+            # ConvBlock(
                 default_conv, in_dim, kernel_size, act=act
             ) for _ in range(n_resblocks)
         ]
@@ -191,7 +196,8 @@ class Conv_Mapping(nn.Module):
         pose = pose.repeat(1, 1, h, w)
 
         feat = torch.cat([feature, pose], dim=1)
-
+        feat = self.head(feat)
+        
         out = self.body(feat)
         return out
 
@@ -381,3 +387,17 @@ class NLBlockND(nn.Module):
 
         return z
 
+
+class ScaledProductAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads=1, dropout=0.1):
+        super().__init__()
+
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=False)
+    
+    def forward(self, z_feat, z_feat_projection):
+        # z_feat: [1, N, 64], z_feat_projection [3, N, 64]
+
+        output, output_weights = self.attention(z_feat, z_feat_projection, z_feat_projection)
+        
+        # output = output + z_feat
+        return output

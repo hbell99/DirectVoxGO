@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND
+from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND, ScaledProductAttention
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -90,6 +90,7 @@ class DirectVoxGO(torch.nn.Module):
 
                  compute_consistency=False,
                  n_mapping=1, 
+                 n_interp=1,
                  compute_cosine=False,
 
                  use_anchor_liif=False,
@@ -99,6 +100,7 @@ class DirectVoxGO(torch.nn.Module):
 
                  cosine_v1=True,
                  cosine_v2=False,
+                 use_liif_attn=False,
 
                  name='edsr-baseline', n_feats=64, n_resblocks=16, res_scale=1, scale=2, no_upsampling=True, rgb_range=1,
                  pretrained_state_dict=None,
@@ -125,6 +127,8 @@ class DirectVoxGO(torch.nn.Module):
         self.compute_cosine = compute_cosine
         self.cosine_v1 = cosine_v1
         self.cosine_v2 = cosine_v2
+        self.use_liif_attn = use_liif_attn
+        self.n_interp = n_interp
 
         self.use_anchor_liif = use_anchor_liif
         print('n_scene', n_scene)
@@ -139,7 +143,10 @@ class DirectVoxGO(torch.nn.Module):
             # print(self.encoder)
             if pretrained_state_dict:
                 sd = torch.load(pretrained_state_dict)
-                self.encoder.load_state_dict(sd)
+                del sd['head.0.weight']
+                encoder_sd = self.encoder.state_dict()
+                encoder_sd.update(sd)
+                self.encoder.load_state_dict(encoder_sd)
                 print('loaded edsr weights from: ', pretrained_state_dict)
             
         elif name == 'resnet34':
@@ -176,11 +183,11 @@ class DirectVoxGO(torch.nn.Module):
             # print(self.map)
         elif conv_map:
             if n_mapping == 1:
-                self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
+                self.map = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
             elif n_mapping == 3:
-                self.map_xy = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
-                self.map_yz = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
-                self.map_zx = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_xy = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_yz = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_zx = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
                 self.map = {
                     'xy': self.map_xy,
                     'yz': self.map_yz,
@@ -258,10 +265,17 @@ class DirectVoxGO(torch.nn.Module):
             'cosine_v1': cosine_v1,
             'cosine_v2': cosine_v2,
             'use_nl': use_nl,
+            'use_liif_attn': use_liif_attn,
+            'n_interp': n_interp,
         }
 
         if implicit_voxel_feat:
             print("\n\033[96mimplicit voxel feat!!!\033[0m")
+            
+        
+            if self.use_liif_attn:
+                print('liif_attn')
+                self.liif_attn = ScaledProductAttention(embed_dim=rgbnet_dim)
             if self.liif:
                 dim0 = 2
             else:
@@ -273,20 +287,30 @@ class DirectVoxGO(torch.nn.Module):
             if cell_decode:
                 dim0 += 2
             # self.interp = nn.Linear(dim0, rgbnet_dim)
-            self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
-            self.interp_yz = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
-            self.interp_zx = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            if n_interp == 1:
+                self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+            else:
+                self.interp_xy = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+                self.interp_yz = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
+                self.interp_zx = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
             if load_liif_sd or use_anchor_liif:
                 print('loading pretrained state dict from liif')
                 liif_sd = load_liif_state_dict(liif_state_dict)
                 self.interp_xy = upadate_interp_state_dict(self.interp_xy, liif_sd)
                 self.interp_yz = upadate_interp_state_dict(self.interp_yz, liif_sd)
                 self.interp_zx = upadate_interp_state_dict(self.interp_zx, liif_sd)
-            self.interp = {
+            if n_interp == 1:
+                self.interp = {
                 'xy': self.interp_xy,
-                'yz': self.interp_yz,
-                'zx': self.interp_yz,
+                'yz': self.interp_xy,
+                'zx': self.interp_xy,
             }
+            else:
+                self.interp = {
+                    'xy': self.interp_xy,
+                    'yz': self.interp_yz,
+                    'zx': self.interp_zx,
+                }
             if use_anchor_liif:
                 print('using anchor')
                 self.anchor_liif = Interp_MLP(dim0, rgbnet_dim, width=interp_width, depth=interp_depth)
@@ -446,7 +470,7 @@ class DirectVoxGO(torch.nn.Module):
         return out
     
 
-    def make_coord(self, axis='xyz'):
+    def make_coord(self, axis='xyz', res=None):
         assert axis in ['xyz', 'xy', 'yz', 'zx']
 
         if axis == 'xyz':
@@ -462,20 +486,28 @@ class DirectVoxGO(torch.nn.Module):
             self_grid_xyz = self_grid_xyz.to(self.xyz_min.device).permute(3, 0, 1, 2).unsqueeze(0)
             return self_grid_xyz
         elif axis == 'xy':
+            if res:
+                h, w = res[0], res[1]
+            else:
+                h, w = self.world_size[-3], self.world_size[-2]
             self_grid_xy = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3], device=self.xyz_min.device),
-                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[0], self.xyz_max[0], h, device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[1], self.xyz_max[1], w, device=self.xyz_min.device),
                 ), 
             dim=-1)
             self_grid_xy = ((self_grid_xy - self.xyz_min[[0, 1]]) / (self.xyz_max[[0, 1]] - self.xyz_min[[0, 1]])).flip((-1,)) * 2 - 1
             self_grid_xy = self_grid_xy.to(self.xyz_min.device).permute(2, 0, 1).unsqueeze(0)
             return self_grid_xy
         elif axis == 'yz':
+            if res:
+                h, w = res[0], res[1]
+            else:
+                h, w = self.world_size[-2], self.world_size[-1]
             self_grid_yz = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[1], self.xyz_max[1], self.world_size[-2], device=self.xyz_min.device),
-                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[1], self.xyz_max[1], h, device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[2], self.xyz_max[2], w, device=self.xyz_min.device),
                 ), 
             dim=-1)
 
@@ -483,10 +515,14 @@ class DirectVoxGO(torch.nn.Module):
             self_grid_yz = self_grid_yz
             return self_grid_yz.to(self.xyz_min.device).permute(2, 0, 1).unsqueeze(0)
         elif axis == 'zx':
+            if res:
+                h, w = res[0], res[1]
+            else:
+                h, w = self.world_size[-1], self.world_size[-3]
             self_grid_zx = torch.stack(
                 torch.meshgrid(
-                    torch.linspace(self.xyz_min[2], self.xyz_max[2], self.world_size[-1], device=self.xyz_min.device),
-                    torch.linspace(self.xyz_min[0], self.xyz_max[0], self.world_size[-3], device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[2], self.xyz_max[2], h, device=self.xyz_min.device),
+                    torch.linspace(self.xyz_min[0], self.xyz_max[0], w, device=self.xyz_min.device),
                 ), 
             dim=-1)
 
@@ -592,7 +628,65 @@ class DirectVoxGO(torch.nn.Module):
 
         return feat
     
-    def liif_interpolate(self, xyz, feats):
+    def find_q_coord_project_feature(self, coord, s, q_coord, feats):
+        ori_q_coord = q_coord.clone() # [1, N, 2]
+        if s == 'xy':
+            # project on yz
+            q_coord[..., 0] = ori_q_coord[..., 1].clone()
+            q_coord[..., 1] = coord[..., 2].clone()
+
+            q_feat_yz = F.grid_sample(feats['yz'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            # project on zx
+            q_coord[..., 0] = coord[..., 2].clone()
+            q_coord[..., 1] = ori_q_coord[..., 0].clone()
+
+            q_feat_zx = F.grid_sample(feats['zx'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            return q_feat_yz, q_feat_zx
+        elif s == 'yz':
+            # project on xy
+            q_coord[..., 0] = coord[..., 0].clone()
+            q_coord[..., 1] = ori_q_coord[..., 0].clone()
+
+            q_feat_xy = F.grid_sample(feats['xy'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            # project on zx
+            q_coord[..., 0] = ori_q_coord[..., 1].clone()
+            q_coord[..., 1] = coord[..., 0].clone()
+
+            q_feat_zx = F.grid_sample(feats['zx'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            return q_feat_xy, q_feat_zx
+        elif s == 'zx':
+            # project on xy
+            q_coord[..., 0] = ori_q_coord[..., 1]
+            q_coord[..., 1] = coord[..., 1]
+
+            q_feat_xy = F.grid_sample(feats['xy'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            # project on yz
+            q_coord[..., 0] = coord[..., 1]
+            q_coord[..., 1] = ori_q_coord[..., 0]
+
+            q_feat_yz = F.grid_sample(feats['yz'], q_coord.flip(-1).unsqueeze(1), 
+                        mode='nearest', align_corners=False)[:, :, 0, :] \
+                        .permute(0, 2, 1)
+            
+            return q_feat_xy, q_feat_yz
+                            
+    
+    def liif_interpolate(self, xyz, feats, res=None):
         # grids ['xy'] ['yz'] ['zx'] [1, c, h, w]
         N, _ = xyz.shape
         xyz = xyz.reshape(1,-1,3)
@@ -613,18 +707,23 @@ class DirectVoxGO(torch.nn.Module):
 
         # field radius (global: [-1, 1])
         # low level of detail rx ry rz
-        rx = 2 / self.world_size[-3] / 2
-        ry = 2 / self.world_size[-2] / 2
-        rz = 2 / self.world_size[-1] / 2
-        r = torch.cuda.FloatTensor([rx, ry, rz])
+        if res is None:
+            rx = 2 / self.world_size[-3] / 2
+            ry = 2 / self.world_size[-2] / 2
+            rz = 2 / self.world_size[-1] / 2
+            r = torch.cuda.FloatTensor([rx, ry, rz])
 
         splits = {'xy': [0, 1], 'yz': [1, 2], 'zx': [2, 0]}
         interp_feats = []
         distillation_loss = 0.
         n_avg = 1.0 * len(vx_lst) * len(vy_lst) * len(splits)
         for s, idxs in splits.items():
-            feat_coord = self.make_coord(axis=s)
-            rx, ry = r[idxs]
+            feat_coord = self.make_coord(axis=s, res=res)
+            if res:
+                rx = 2 / res[0] / 2
+                ry = 2 / res[1] / 2
+            else:
+                rx, ry = r[idxs]
             preds = []
             areas = []
             for vx in vx_lst:
@@ -646,6 +745,12 @@ class DirectVoxGO(torch.nn.Module):
                     rel_coord = coord[..., idxs] - q_coord
                     rel_coord[:, :, 0] *= feats[s].shape[-2]
                     rel_coord[:, :, 1] *= feats[s].shape[-1]
+
+                    if self.use_liif_attn:
+                        if q_feat.shape[1] > 0:
+                            q_feat_1, q_feat_2 = self.find_q_coord_project_feature(coord, s, q_coord, feats)
+                            q_feat_projection = torch.cat([q_feat, q_feat_1, q_feat_2])
+                            q_feat = self.liif_attn(q_feat, q_feat_projection)
 
                     inp = torch.cat([q_feat, rel_coord], dim=-1)
 
@@ -688,7 +793,7 @@ class DirectVoxGO(torch.nn.Module):
 
         return interp_feats, distillation_loss
     
-    def interpolate(self, xyz, grids,mode=None, align_corners=True):
+    def interpolate(self, xyz, grids, res=None, mode=None, align_corners=True):
         N, _ = xyz.shape
         xyz = xyz.reshape(1,1,-1,3)
         ind_norm = ((xyz - self.xyz_min) / (self.xyz_max - self.xyz_min)).flip((-1,)) * 2 - 1
@@ -708,7 +813,7 @@ class DirectVoxGO(torch.nn.Module):
 
         interp_feats = []
         for s, idxs in splits.items():
-            grid_coord = self.make_coord(axis=s)
+            grid_coord = self.make_coord(axis=s, res=res)
             q_coord = F.grid_sample(grid_coord, ind_norm[...,idxs], mode=mode, align_corners=align_corners)[0, :, 0, :].T
             pos_emb = (q_coord.unsqueeze(-1) * self.posfreq).flatten(-2)
             pos_emb = torch.cat([q_coord, pos_emb.sin(), pos_emb.cos()], -1)
@@ -855,13 +960,17 @@ class DirectVoxGO(torch.nn.Module):
     def encode_feat_inference(self, rgb_lr, pose_lr, scene_id):
         xyz_feats = self.backbone_encode(rgb_lr)
         if self.closed_map:
+            print('closed_map')
             mapped_feats = self.sampling_encode(xyz_feats, pose_lr, is_test=True)
         elif self.use_nl:
+            print('non-local attention')
             mapped_feats = self.nl_density_attention(xyz_feats, scene_id, is_test=True)
         else:
+            print('backbone only')
             mapped_feats = xyz_feats
         
         if self.conv_map or self.mlp_map:
+            print('mapping network')
             poses = []
             for i in range(3):
                 if not isinstance(self.map, dict):
@@ -931,7 +1040,7 @@ class DirectVoxGO(torch.nn.Module):
             else:
                 mapped_feats = []
                 for i, s in enumerate(['xy', 'yz', 'zx']):
-                    mapped_feat = self.map[s](mapped_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, pose1, pose2, pose3
+                    mapped_feat = self.map[s](mapped_feats[3*i: 3*i+3], poses[3*i: 3*i+3]) # img1, img2, img3, a*pose1, a*pose2, a*pose3
                     mapped_feats.append(mapped_feat)
                 
                 mapped_feats = torch.cat(mapped_feats)
@@ -942,11 +1051,11 @@ class DirectVoxGO(torch.nn.Module):
         mapped_feats = mapped_feats.reshape(3, 3, c, h, w)
 
         consistency_loss = 0.
-
-        for k in range(3):
-            for i in range(3):
-                for j in range(3):
-                    consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
+        if self.compute_consistency:
+            for k in range(3):
+                for i in range(3):
+                    for j in range(3):
+                        consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
         feats = {
             'xy': mapped_feats[0, 0].unsqueeze(0),
@@ -954,41 +1063,43 @@ class DirectVoxGO(torch.nn.Module):
             'zx': mapped_feats[2, 2].unsqueeze(0),
         }
         
-        if self.cosine_v1:
-            cosine_loss = 0.
-            # if self.compute_cosine:
-            for k in range(3):
-                similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).abs().sum() \
-                    + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
-                cosine_loss += 1/3. * similarity
-            for k in range(3):
-                similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).abs().sum() \
-                    + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
-                cosine_loss += 1/3. * similarity
-            for k in range(3):
-                similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).abs().sum() \
-                    + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).abs().sum()
-                cosine_loss += 1/3. * similarity
-            
-            cosine_loss = cosine_loss / h / w
-        elif self.cosine_v2:
-            cosine_loss = 0.
-            cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).abs().sum()
-            cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).abs().sum()
-            cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).abs().sum()
+        cosine_loss = 0.
+        if self.compute_cosine:
+            if self.cosine_v1:
+                cosine_loss = 0.
+                # if self.compute_cosine:
+                for k in range(3):
+                    similarity = 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[1, k], dim=0).abs().sum() \
+                        + 1/2. * F.cosine_similarity(mapped_feats[0, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+                    cosine_loss += 1/3. * similarity
+                for k in range(3):
+                    similarity = 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[0, k]).abs().sum() \
+                        + 1/2. * F.cosine_similarity(mapped_feats[1, k].detach(), mapped_feats[2, k], dim=0).abs().sum()
+                    cosine_loss += 1/3. * similarity
+                for k in range(3):
+                    similarity = 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[0, k], dim=0).abs().sum() \
+                        + 1/2. * F.cosine_similarity(mapped_feats[2, k].detach(), mapped_feats[1, k], dim=0).abs().sum()
+                    cosine_loss += 1/3. * similarity
+                
+                cosine_loss = cosine_loss / h / w
+            elif self.cosine_v2:
+                cosine_loss = 0.
+                cosine_loss += 1/3. * F.cosine_similarity(feats['xy'][0].detach(), feats['yz'][0], dim=0).abs().sum()
+                cosine_loss += 1/3. * F.cosine_similarity(feats['yz'][0].detach(), feats['zx'][0], dim=0).abs().sum()
+                cosine_loss += 1/3. * F.cosine_similarity(feats['zx'][0].detach(), feats['xy'][0], dim=0).abs().sum()
 
-            cosine_loss = cosine_loss / h / w
-        else: # stop gradient
-            cosine_loss = 0.
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['xy'][0].detach(), feats['yz'][0])
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['yz'][0].detach(), feats['zx'][0])
-            cosine_loss += 1/3. * 1 / F.mse_loss(feats['zx'][0].detach(), feats['xy'][0])
+                cosine_loss = cosine_loss / h / w
+            else: # stop gradient
+                cosine_loss = 0.
+                cosine_loss += 1/3. * 1 / F.mse_loss(feats['xy'][0].detach(), feats['yz'][0])
+                cosine_loss += 1/3. * 1 / F.mse_loss(feats['yz'][0].detach(), feats['zx'][0])
+                cosine_loss += 1/3. * 1 / F.mse_loss(feats['zx'][0].detach(), feats['xy'][0])
 
         
         return feats, consistency_loss, cosine_loss
 
 
-    def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
+    def forward(self, rgb_lr, pose_lr, rays_o, rays_d, viewdirs, scene_id, res=None, global_step=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
@@ -996,10 +1107,10 @@ class DirectVoxGO(torch.nn.Module):
         '''
         feats, consistency_loss, cosine_loss = self.encode_feat(rgb_lr, pose_lr, scene_id)
         # self.k0 = feats
-        ret_dict, distillation_loss = self.render(feats, rays_o, rays_d, viewdirs, scene_id, global_step, **render_kwargs)
+        ret_dict, distillation_loss = self.render(feats, rays_o, rays_d, viewdirs, scene_id, res, global_step, **render_kwargs)
         return ret_dict, consistency_loss, cosine_loss, distillation_loss
     
-    def render(self, feats, rays_o, rays_d, viewdirs, scene_id, global_step=None, **render_kwargs):
+    def render(self, feats, rays_o, rays_d, viewdirs, scene_id, res=None, global_step=None, **render_kwargs):
         assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
         
         ret_dict = {}
@@ -1051,7 +1162,7 @@ class DirectVoxGO(torch.nn.Module):
                     for s in ['xy', 'yz', 'zx']:
                         feats[s] = F.unfold(feats[s], 3, padding=1).view(_, c * 9, h, w)
                 if self.liif:
-                    k0, distillation_loss = self.liif_interpolate(ray_pts, feats)
+                    k0, distillation_loss = self.liif_interpolate(ray_pts, feats, res)
                 else:
                     k0 = self.interpolate(ray_pts, feats)
             else:

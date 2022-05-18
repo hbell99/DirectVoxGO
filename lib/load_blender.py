@@ -485,9 +485,10 @@ class MultisceneBlenderDataset_v2(Dataset):
         metas = {}
         scenes = os.listdir(basedir)
         self.scenes = [s for s in scenes if not s.endswith('txt')]
-        # self.scenes = ['lego']
+        self.scenes = ['lego']
         self.index2scene = {i: s for i, s in enumerate(self.scenes)}
         self.scene2index = {s: i for i, s in enumerate(self.scenes)}
+        print('scene2index', self.scene2index)
         for s in self.scenes:
             with open(os.path.join(basedir, s, 'transforms_{}.json'.format(split)), 'r') as fp:
                 metas[s] = json.load(fp)
