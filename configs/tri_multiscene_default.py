@@ -69,6 +69,7 @@ coarse_train = dict(
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     lrate_distillation_head=1e-4,
     lrate_nl_block=1e-4, 
+    lrate_liif_attn=1e-4,
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
     pervoxel_lr=True,             # view-count-based lr
     pervoxel_lr_downrate=1,       # downsampled image for computing view-count-based lr
@@ -172,8 +173,10 @@ fine_model_and_render.update(dict(
     compute_cosine=False,
 
     n_mapping=1,
+    n_interp=3, 
 
     use_anchor_liif=False,
+    use_liif_attn=False,
     use_siren=False,
     use_nl=False,
 

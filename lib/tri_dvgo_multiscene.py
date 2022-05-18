@@ -1,7 +1,6 @@
 import os
 import time
 import functools
-from matplotlib.pyplot import step
 import numpy as np
 
 import torch
@@ -11,7 +10,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND, ScaledProductAttention
+from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND, ScaledProductAttention, Conv_Mapping_d_o
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -183,11 +182,12 @@ class DirectVoxGO(torch.nn.Module):
             # print(self.map)
         elif conv_map:
             if n_mapping == 1:
-                self.map = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
+                # self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
+                self.map = Conv_Mapping_d_o(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
             elif n_mapping == 3:
-                self.map_xy = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
-                self.map_yz = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
-                self.map_zx = Conv_Mapping(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_xy = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_yz = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map_zx = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
                 self.map = {
                     'xy': self.map_xy,
                     'yz': self.map_yz,
@@ -958,6 +958,7 @@ class DirectVoxGO(torch.nn.Module):
         return mapped_feats
     
     def encode_feat_inference(self, rgb_lr, pose_lr, scene_id):
+
         xyz_feats = self.backbone_encode(rgb_lr)
         if self.closed_map:
             print('closed_map')
@@ -1000,8 +1001,8 @@ class DirectVoxGO(torch.nn.Module):
 
 
     def encode_feat(self, rgb_lr, pose_lr, scene_id):
-
-        # xyz_feats = self.encoder(rgb_lr)
+        _, _, h, w = rgb_lr.shape
+        rays_d = rgb_lr[:, -3:, :, :].reshape(3, 3, -1)
         xyz_feats = self.backbone_encode(rgb_lr)
         
         # if self.closed_map:
@@ -1029,7 +1030,17 @@ class DirectVoxGO(torch.nn.Module):
             for i in range(3):
                 for j in range(3):
                     if not isinstance(self.map, dict):
-                        poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                        if isinstance(self.map, Conv_Mapping):
+                            poses.append(self.pose_anchor[i].to(pose_lr[j].device).mm(torch.linalg.inv(pose_lr[j]))) # one mapping networks, input Anchor and Pose
+                            # [4, 4]
+                        elif isinstance(self.map, Conv_Mapping_d_o):
+                            anchor_c2w = self.pose_anchor[i][:3, :3].to(pose_lr[j].device)
+                            c2w = anchor_c2w.mm(torch.linalg.inv(pose_lr[j][:3, :3]))
+                            anchor_d = c2w.mm(rays_d[j]).reshape(3, h, w)
+                            anchor_o = self.pose_anchor[i][:3, 3].to(pose_lr[j].device)
+                            anchor_o = anchor_o.unsqueeze(-1).unsqueeze(-1).repeat(1, h, w)
+                            anchor = torch.cat([anchor_d, anchor_o], dim=0)
+                            poses.append(anchor)
                     else:
                         poses.append(pose_lr[j])
             poses = torch.stack(poses)

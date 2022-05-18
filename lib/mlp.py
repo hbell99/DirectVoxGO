@@ -158,14 +158,6 @@ class ConvBlock(nn.Module):
 class Conv_Mapping(nn.Module):
     def __init__(self, in_dim, out_dim=12, kernel_size=3, n_resblocks=5):
         super().__init__()
-        # self.feat_linears = nn.Sequential(
-        #     nn.Linear(in_dim, width),  nn.ReLU(inplace=True),  
-        #     *[
-        #         nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True))
-        #         for _ in range(depth-2)
-        #     ]
-        # )
-        # self.out_linear = nn.Linear(width, out_dim)
         act = nn.ReLU(inplace=True)
         m_head = [default_conv(in_dim, in_dim, kernel_size)]
         m_head.append(nn.MaxPool2d(kernel_size=(2, 2)))
@@ -201,27 +193,38 @@ class Conv_Mapping(nn.Module):
         out = self.body(feat)
         return out
 
-# class Conv_Mapping_pure(nn.Module):
-#     def __init__(self, in_dim, out_dim=12, kernel_size=3, n_resblocks=3):
-#         super().__init__()
+class Conv_Mapping_d_o(nn.Module):
+    def __init__(self, in_dim, out_dim=12, kernel_size=3, n_resblocks=5):
+        super().__init__()
+        act = nn.ReLU(inplace=True)
+        m_head = [default_conv(in_dim, in_dim, kernel_size)]
+        m_head.append(nn.MaxPool2d(kernel_size=(2, 2)))
         
-#         act = nn.ReLU(inplace=True)
-#         m_body = [
-#             ResBlock(
-#                 default_conv, in_dim, kernel_size, act=act
-#             ) for _ in range(n_resblocks)
-#         ]
-#         m_body.append(default_conv(in_dim, out_dim, kernel_size))
+        self.head = nn.Sequential(*m_head)
+        
+        # print('!!!!ConBlock!!!!!')
+        print('!!!!ResBlock!!!!!')
+        m_body = [
+            ResBlock(
+            # ConvBlock(
+                default_conv, in_dim, kernel_size, act=act
+            ) for _ in range(n_resblocks)
+        ]
+        m_body.append(default_conv(in_dim, out_dim, kernel_size))
 
-#         self.body = nn.Sequential(*m_body)
+        self.body = nn.Sequential(*m_body)
     
-#     def forward(self, feat):
-#         # feature: [1, c, h, w]
-#         # pose: [1, 4, 4]
-#         # out: [1, out_dim, h, w] 
+    def forward(self, feature, anchor):
+        # feature: [1, c, h, w]
+        # pose: [1, 6, h, w]
+        # out: [1, out_dim, h, w] 
+        _, c, h, w = feature.shape
 
-#         out = self.body(feat)
-#         return out
+        feat = torch.cat([feature, anchor], dim=1)
+        feat = self.head(feat)
+        
+        out = self.body(feat)
+        return out
 
 class Swish(nn.Module):
     def __init__(self):
