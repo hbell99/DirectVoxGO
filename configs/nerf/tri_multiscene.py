@@ -1,6 +1,6 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = '1resconv_d_o_maxpool_liif_d_o_lego'# '3conv_liif_scratch_coarse+fine' 
+expname = '1resconv_newrgb_cell_liif_d_o_lego'# '3conv_liif_scratch_coarse+fine' 
 basedir = './logs/tri_dvgo_multiscene_v1/nerf_synthetic/'
 
 data = dict(
@@ -47,7 +47,7 @@ fine_train = dict(
 
     lrate_distillation_head=5e-4,
 
-    lrate_decay=1600,
+    lrate_decay=1000,
     pg_scale=[1000, 2000, 3000, 5000],
     fixed_lr_idx=[], #[34, 49, 63],
     fixed_lr_idx_render=[34, 49, 63], # [61, 95, 46]
@@ -67,12 +67,12 @@ fine_train = dict(
 fine_model_and_render = dict(
     implicit_voxel_feat=True,
     feat_unfold=False,
-    cell_decode=False,
+    cell_decode=True,
     local_ensemble=True,
     use_coarse_geo=True,
     rgbnet_dim=64,
     name='edsr-baseline', # 'resnet34', # 'resnet34', #
-    posbase_pe=2,
+    posbase_pe=5,
 
     rgbnet_depth=3,
 
@@ -99,9 +99,9 @@ fine_model_and_render = dict(
     liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
     load_liif_sd=False,
     # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
-    compute_consistency=False,
+    compute_consistency=True,
     
-    compute_cosine=False,
+    compute_cosine=True,
 
     n_mapping=1,
 

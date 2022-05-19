@@ -66,11 +66,11 @@ def load_nsvf_data(basedir, down=1):
     render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
 
     if down > 1:
-        H = H//down
-        W = W//down
+        H = int(H//down)
+        W = int(W//down)
         focal = focal/float(down)
 
-        imgs_half_res = np.zeros((imgs.shape[0], H, W, 4))
+        imgs_half_res = np.zeros((imgs.shape[0], H, W, imgs.shape[-1]))
         for i, img in enumerate(imgs):
             imgs_half_res[i] = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
         imgs = imgs_half_res
@@ -86,8 +86,8 @@ class MultisceneNSVFDataset(Dataset):
     split2index = {s: i for i, s in enumerate(splits)}
 
     def __init__(self, basedir, down=1, split='train', white_bkgd=True, fixed_idx=None):
-        self.H = self.H // down
-        self.W = self.W // down
+        self.H = int(self.H // down)
+        self.W = int(self.W // down)
         
         self.basedir = basedir
         self.white_bkgd = white_bkgd

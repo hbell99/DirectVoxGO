@@ -166,6 +166,7 @@ class Conv_Mapping(nn.Module):
         
         # print('!!!!ConBlock!!!!!')
         print('!!!!ResBlock!!!!!')
+        print('!!!!Conv_Mapping!!!!!')
         m_body = [
             ResBlock(
             # ConvBlock(
@@ -204,6 +205,7 @@ class Conv_Mapping_d_o(nn.Module):
         
         # print('!!!!ConBlock!!!!!')
         print('!!!!ResBlock!!!!!')
+        print('!!!!Conv_Mapping_d_o!!!!!')
         m_body = [
             ResBlock(
             # ConvBlock(
@@ -404,3 +406,41 @@ class ScaledProductAttention(nn.Module):
         
         # output = output + z_feat
         return output
+
+class rgbnet(nn.Module):
+    def __init__(self, input_dim, vox_dim=64, width=128, depth=4):
+        super().__init__()
+
+        # self.head = nn.Sequential(
+        #     nn.Linear(input_dim, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
+        #     *[nn.Sequential(nn.Linear(width, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True)) 
+        #     for _ in range(depth-3)]
+        # )
+
+        # self.mid = nn.Sequential(nn.Linear(width+vox_dim, width), nn.ReLU(inplace=True))
+        self.head = nn.Sequential(
+            nn.Linear(input_dim, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
+            # nn.Linear(width, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
+            nn.Linear(width, width-vox_dim)
+        )
+
+        self.mid = nn.Sequential(
+            # nn.Linear(width, width), nn.ReLU(inplace=True),
+            nn.Linear(width, width), nn.ReLU(inplace=True),
+        )
+
+        self.rgb = nn.Linear(width, 3)
+
+        nn.init.constant_(self.rgb.bias, 0)
+    
+    def forward(self, pos_view, vox):
+
+        hid = self.head(pos_view)
+
+        hid = torch.cat([hid, vox], dim=-1)
+
+        mid = self.mid(hid)
+
+        rgb = self.rgb(mid)
+
+        return rgb

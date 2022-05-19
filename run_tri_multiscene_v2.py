@@ -435,11 +435,11 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
                     j = cfg_train.fixed_lr_idx
                 else:
                     j = torch.randint(multiscene_dataset.all_imgs[scene_id].shape[0], [3])
-                rgb_lr = multiscene_dataset.all_imgs[scene_id][j]
-                pose_lr = multiscene_dataset.all_poses[scene_id][j]
+                rgb_lr = multiscene_dataset.all_imgs[scene_id][j].to(device)
+                pose_lr = multiscene_dataset.all_poses[scene_id][j].to(device)
 
-                rays_o_lr = all_rays_o_tr[scene_id][j]
-                rays_d_lr = all_rays_d_tr[scene_id][j]
+                rays_o_lr = all_rays_o_tr[scene_id][j].to(device)
+                rays_d_lr = all_rays_d_tr[scene_id][j].to(device)
                 viewdirs_lr = all_viewdirs_tr[scene_id][j]
                 rgb_lr = torch.cat([rgb_lr, rays_o_lr, rays_d_lr], dim=-1)
 

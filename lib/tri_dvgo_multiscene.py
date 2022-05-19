@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_coo
 
 from .backbone import make_edsr, make_edsr_baseline
-from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND, ScaledProductAttention, Conv_Mapping_d_o
+from .mlp import Mapping, Interp_MLP, Conv_Mapping, SirenRGB_net, NLBlockND, ScaledProductAttention, Conv_Mapping_d_o, rgbnet
 from .backbone import resnet_extractor
 from .load_blender import pose_spherical
 
@@ -182,8 +182,8 @@ class DirectVoxGO(torch.nn.Module):
             # print(self.map)
         elif conv_map:
             if n_mapping == 1:
-                # self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
-                self.map = Conv_Mapping_d_o(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
+                self.map = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5) # TODO hard code here
+                # self.map = Conv_Mapping_d_o(in_dim=n_feats+6, out_dim=rgbnet_dim, n_resblocks=5)
             elif n_mapping == 3:
                 self.map_xy = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
                 self.map_yz = Conv_Mapping(in_dim=n_feats+16, out_dim=rgbnet_dim, n_resblocks=5)
@@ -358,10 +358,12 @@ class DirectVoxGO(torch.nn.Module):
             if feat_pe > 0:
                 self.register_buffer('featfreq', torch.FloatTensor([(2**i) for i in range(feat_pe)]))
             dim0 = (3+3*viewbase_pe*2)
+            view_dim = (3+3*viewbase_pe*2)
             if self.rgbnet_full_implicit:
                 pass
             if posbase_pe > 0 and (self.cat_posemb or self.no_voxel_feat):
                 dim0 += (3+3*posbase_pe*2)
+                pos_dim = (3+3*posbase_pe*2)
             if rgbnet_direct and not self.no_voxel_feat:
                 if feat_fourier:
                     dim0 += self.k0_dim+self.k0_dim*feat_pe*2
@@ -375,15 +377,16 @@ class DirectVoxGO(torch.nn.Module):
             if use_siren:
                 self.rgbnet = SirenRGB_net(rgbnet_depth, dim0, rgbnet_width)
             else:
-                self.rgbnet = nn.Sequential(
-                    nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                    *[
-                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.Dropout(p=0.1), nn.ReLU(inplace=True))
-                        for _ in range(rgbnet_depth-2)
-                    ],
-                    nn.Linear(rgbnet_width, 3),
-                )
-                nn.init.constant_(self.rgbnet[-1].bias, 0)
+                # self.rgbnet = nn.Sequential(
+                #     nn.Linear(dim0, rgbnet_width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
+                #     *[
+                #         nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.Dropout(p=0.1), nn.ReLU(inplace=True))
+                #         for _ in range(rgbnet_depth-2)
+                #     ],
+                #     nn.Linear(rgbnet_width, 3),
+                # )
+                # nn.init.constant_(self.rgbnet[-1].bias, 0)
+                self.rgbnet = rgbnet(input_dim=pos_dim+view_dim, vox_dim=self.k0_dim, width=rgbnet_width, depth=4)
             # print('dvgo: feature voxel grid', self.k0.shape)
             print('dvgo: mlp', self.rgbnet)
 
@@ -958,7 +961,8 @@ class DirectVoxGO(torch.nn.Module):
         return mapped_feats
     
     def encode_feat_inference(self, rgb_lr, pose_lr, scene_id):
-
+        _, _, h, w = rgb_lr.shape
+        rays_d = rgb_lr[:, -3:, :, :].reshape(3, 3, -1)
         xyz_feats = self.backbone_encode(rgb_lr)
         if self.closed_map:
             print('closed_map')
@@ -975,7 +979,17 @@ class DirectVoxGO(torch.nn.Module):
             poses = []
             for i in range(3):
                 if not isinstance(self.map, dict):
-                    poses.append(self.pose_anchor[i].to(pose_lr[i].device).mm(torch.linalg.inv(pose_lr[i]))) # one mapping networks, input Anchor and Pose
+                    if isinstance(self.map, Conv_Mapping):
+                        poses.append(self.pose_anchor[i].to(pose_lr[i].device).mm(torch.linalg.inv(pose_lr[i]))) # one mapping networks, input Anchor and Pose
+                        # [4, 4]
+                    elif isinstance(self.map, Conv_Mapping_d_o):
+                        anchor_c2w = self.pose_anchor[i][:3, :3].to(pose_lr[i].device)
+                        c2w = anchor_c2w.mm(torch.linalg.inv(pose_lr[i][:3, :3]))
+                        anchor_d = c2w.mm(rays_d[i]).reshape(3, h, w)
+                        anchor_o = self.pose_anchor[i][:3, 3].to(pose_lr[i].device)
+                        anchor_o = anchor_o.unsqueeze(-1).unsqueeze(-1).repeat(1, h, w)
+                        anchor = torch.cat([anchor_d, anchor_o], dim=0)
+                        poses.append(anchor)
                 else:
                     poses.append(pose_lr[i])
             poses = torch.stack(poses)
@@ -1210,9 +1224,12 @@ class DirectVoxGO(torch.nn.Module):
                     pos_emb = (ray_pts.unsqueeze(-1) * self.posfreq).flatten(-2)
                     pos_emb = torch.cat([ray_pts, pos_emb.sin(), pos_emb.cos()], -1)
                     rgb_feat = torch.cat([k0_view, pos_emb, viewdirs_emb], -1)
+                    pos_view_emb = torch.cat([pos_emb, viewdirs_emb], -1)
                 else:
                     rgb_feat = torch.cat([k0_view, viewdirs_emb], -1)
-                rgb_logit = self.rgbnet(rgb_feat)
+                # rgb_logit = self.rgbnet(rgb_feat)
+
+                rgb_logit = self.rgbnet(pos_view_emb, k0_view)
 
                 if self.rgbnet_direct:
                     rgb = torch.sigmoid(rgb_logit)
