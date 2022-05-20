@@ -128,7 +128,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         
         render_result_chunks = [
             # {k: v for k, v in model(rgb_lr, pose_lr, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, **render_kwargs)[0].items() if k in keys}
-            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, res=[800, 800], **render_kwargs)[0].items() if k in keys}
+            {k: v for k, v in model.render(feats, ro.to(device), rd.to(device), vd.to(device), scene_id=scene_id, res=None, **render_kwargs)[0].items() if k in keys}
             for ro, rd, vd in zip(rays_o.split(8192, 0), rays_d.split(8192, 0), viewdirs.split(8192, 0))
         ]
         render_result = {
@@ -503,6 +503,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             cosine_loss = consistency_loss = distillation_loss = 0.
         loss.backward()
 
+        if stage == 'fine':
+            nn.utils.clip_grad_norm_(parameters=model.encoder.parameters(), max_norm=5)
+            nn.utils.clip_grad_norm_(parameters=model.map.parameters(), max_norm=5)
+
         optimizer.step()
         psnr_lst.append(psnr.item())
 
@@ -626,7 +630,7 @@ if __name__=='__main__':
     # load images / poses / camera settings / data split
     # data_dict = load_everything(args=args, cfg=cfg)
 
-    multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx, down=cfg.data.down)
+    multiscene_dataset = dataset_dict[cfg.data.dataset](cfg.data.datadir, split='train', fixed_idx=cfg.fine_train.fixed_lr_idx, down=cfg.data.down, s=cfg.data.test_scenes)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
     if args.export_bbox_and_cams_only:

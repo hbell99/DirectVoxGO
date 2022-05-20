@@ -416,7 +416,7 @@ class MultisceneBlenderDataset_v2(Dataset):
     near, far = 2., 6.
     render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
 
-    def __init__(self, basedir, testskip=1, down=1, split='train', white_bkgd=True, fixed_idx=None):
+    def __init__(self, basedir, testskip=1, down=1, split='train', white_bkgd=True, fixed_idx=None, s=None):
         self.H = self.H // down
         self.W = self.W // down
         if split =='train' or testskip==0:
@@ -427,6 +427,7 @@ class MultisceneBlenderDataset_v2(Dataset):
         self.basedir = basedir
         self.white_bkgd = white_bkgd
         self.fixed_idx = fixed_idx
+        self.s = s
 
         self.read_meta(basedir, split)
         # self.focal = .5 * self.W / np.tan(.5 * self.camera_angle_x)
@@ -484,8 +485,10 @@ class MultisceneBlenderDataset_v2(Dataset):
     def read_meta(self, basedir, split='train'):
         metas = {}
         scenes = os.listdir(basedir)
-        self.scenes = [s for s in scenes if not s.endswith('txt')]
-        self.scenes = ['lego']
+        if self.s is None:
+            self.scenes = [s for s in scenes if not s.endswith('txt')]
+        else:
+            self.scenes = self.s
         self.index2scene = {i: s for i, s in enumerate(self.scenes)}
         self.scene2index = {s: i for i, s in enumerate(self.scenes)}
         print('scene2index', self.scene2index)
