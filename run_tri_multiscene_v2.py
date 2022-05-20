@@ -85,7 +85,7 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     rgb_lr = torch.cat([rgb_lr, rays_o_tr, rays_d_tr], dim=-1) # , viewdirs_tr
     rgb_lr = rgb_lr.permute(0, 3, 1, 2)
     h, w = rgb_lr.shape[-2:]
-    h, w = h // render_kwargs['render_down'], w // render_kwargs['render_down']
+    h, w = int(h // render_kwargs['render_down']), int(w // render_kwargs['render_down'])
     resize = transforms.Resize([h, w])
     rgb_lr = resize(rgb_lr)
     rgb_lr = (rgb_lr - 0.5) / 0.5
@@ -460,7 +460,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # volume rendering
         if stage == 'coarse':
             # raise NotImplementedError
-            render_result = model(rays_o, rays_d, viewdirs, scene_id, res=[200, 200], global_step=global_step, **render_kwargs)
+            render_result = model(rays_o, rays_d, viewdirs, scene_id, res=None, global_step=global_step, **render_kwargs)
         else:
             rgb_lr = rgb_lr.permute(0, 3, 1, 2)
             assert rgb_lr.shape[1] == 9
