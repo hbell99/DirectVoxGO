@@ -503,10 +503,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             cosine_loss = consistency_loss = distillation_loss = 0.
         loss.backward()
 
-        if stage == 'fine':
-            nn.utils.clip_grad_norm_(parameters=model.encoder.parameters(), max_norm=5)
-            nn.utils.clip_grad_norm_(parameters=model.map.parameters(), max_norm=5)
-
         optimizer.step()
         psnr_lst.append(psnr.item())
 

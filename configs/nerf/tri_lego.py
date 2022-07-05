@@ -1,19 +1,19 @@
 _base_ = '../tri_default.py'
 
-expname = 'liif_sum_sep_interp'
+expname = 'debug' #'rnd_liif_sum_sep_interp'
 basedir = './logs/tri_dvgo/nerf_synthetic/lego'
 
 data = dict(
     down=1,
-    datadir='./data/nerf_synthetic/lego',
+    datadir='/home/hydeng/data/NeRF_data/nerf_synthetic/mic/',
     dataset_type='blender',
     white_bkgd=True,
     render_down=4,
 )
 
-# coarse_train = dict(
-#     N_iters=0, # could be larger
-# )
+coarse_train = dict(
+    N_iters=0, # could be larger
+)
 
 # coarse_model_and_render = dict(
 #     mask_cache_thres=7.5e-4, 
@@ -33,7 +33,7 @@ fine_train = dict(
 
     lrate_decay=400,
     pg_scale=[5000, 8000, 12000, 15000],
-    fixed_lr_idx=[34, 49, 63],
+    fixed_lr_idx=[], #[34, 49, 63],
     ray_sampler='random',
 
     dynamic_downsampling=True,
@@ -46,7 +46,7 @@ fine_model_and_render = dict(
     feat_unfold=False,
     cell_decode=True,
     local_ensemble=True,
-    use_coarse_geo=True,
+    use_coarse_geo=False,
     rgbnet_dim=32,
     name='edsr-baseline' , # 'resnet34', #
     posbase_pe=0,
@@ -67,4 +67,6 @@ fine_model_and_render = dict(
 
     feat_pe=0,
     feat_fourier=False,
+
+    pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
 )
