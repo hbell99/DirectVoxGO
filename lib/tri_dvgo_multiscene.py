@@ -1080,7 +1080,7 @@ class DirectVoxGO(torch.nn.Module):
             for k in range(3):
                 for i in range(3):
                     for j in range(3):
-                        consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i], mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
+                        consistency_loss += 1/27. * F.mse_loss(mapped_feats[k, i].detach(), mapped_feats[k, j]) # self.consistency_criterion(mapped_feats[k, i], mapped_feats[k, j])
         
         feats = {
             'xy': mapped_feats[0, 0].unsqueeze(0),

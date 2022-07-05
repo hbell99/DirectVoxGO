@@ -85,17 +85,23 @@ class MultisceneNSVFDataset(Dataset):
     splits = ['train', 'val', 'test']
     split2index = {s: i for i, s in enumerate(splits)}
 
-    def __init__(self, basedir, down=1, split='train', white_bkgd=True, fixed_idx=None):
+    def __init__(self, basedir, down=1, split='train', white_bkgd=True, fixed_idx=None, s=None):
         self.H = int(self.H // down)
         self.W = int(self.W // down)
         
         self.basedir = basedir
         self.white_bkgd = white_bkgd
         self.fixed_idx = fixed_idx
+        self.s = s
 
-        self.scenes = os.listdir(basedir)
+        scenes = os.listdir(basedir)
+        if self.s is None:
+            self.scenes = [s for s in scenes if not s.endswith('txt')]
+        else:
+            self.scenes = self.s
         self.index2scene = {i: s for i, s in enumerate(self.scenes)}
         self.scene2index = {s: i for i, s in enumerate(self.scenes)}
+        print(self.scene2index)
 
         all_imgs, all_poses, all_Ks, all_HW = [], [], [], []
         for s in self.scenes:

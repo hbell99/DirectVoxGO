@@ -412,16 +412,19 @@ class rgbnet(nn.Module):
         super().__init__()
 
         # self.head = nn.Sequential(
-        #     nn.Linear(input_dim, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
-        #     *[nn.Sequential(nn.Linear(width, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True)) 
+        #     nn.Linear(input_dim, width), nn.ReLU(inplace=True),
+        #     *[nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True)) 
         #     for _ in range(depth-3)]
         # )
 
-        # self.mid = nn.Sequential(nn.Linear(width+vox_dim, width), nn.ReLU(inplace=True))
+        # self.mid = nn.Sequential(
+        #     nn.Linear(width+vox_dim, width), nn.ReLU(inplace=True),
+        #     # nn.Linear(width, width), nn.ReLU(inplace=True),
+        # )
         self.head = nn.Sequential(
-            nn.Linear(input_dim, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
-            # nn.Linear(width, width), nn.Dropout(p=0.1), nn.ReLU(inplace=True),
-            nn.Linear(width, width-vox_dim)
+            nn.Linear(input_dim, width), nn.ReLU(inplace=True),
+            nn.Linear(width, width), nn.ReLU(inplace=True),
+            nn.Linear(width, width-vox_dim), nn.ReLU(inplace=True)
         )
 
         self.mid = nn.Sequential(
@@ -431,7 +434,7 @@ class rgbnet(nn.Module):
 
         self.rgb = nn.Linear(width, 3)
 
-        nn.init.constant_(self.rgb.bias, 0)
+        # nn.init.constant_(self.rgb.bias, 0)
     
     def forward(self, pos_view, vox):
 

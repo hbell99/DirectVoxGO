@@ -417,8 +417,8 @@ class MultisceneBlenderDataset_v2(Dataset):
     render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
 
     def __init__(self, basedir, testskip=1, down=1, split='train', white_bkgd=True, fixed_idx=None, s=None):
-        self.H = self.H // down
-        self.W = self.W // down
+        self.H = int(self.H // down)
+        self.W = int(self.W // down)
         if split =='train' or testskip==0:
             self.skip = 1
         else:

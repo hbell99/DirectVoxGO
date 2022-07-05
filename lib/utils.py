@@ -1,4 +1,3 @@
-import imp
 import os, math
 import numpy as np
 import scipy.signal
@@ -68,6 +67,7 @@ def load_model(model_class, ckpt_path):
     # ckpt['model_kwargs']['liif_state_dict'] = None
     model = model_class(**ckpt['model_kwargs'])
     # print(model.state_dict().keys())
+    print('density' in ckpt['model_state_dict'])
     model.load_state_dict(ckpt['model_state_dict'])
     print('loaded checkpoints!!!')
 
