@@ -22,16 +22,21 @@ def read_image(path):
     return image
 
 if __name__ == '__main__':
-    for s in ['chair', 'drums', 'ficus', 'hotdog', 'lego', 'materials', 'mic', 'ship']:
-        data_dir = f'data/nerf_synthetic/{s}/test'
-        eval_dir = f'logs/nerf_synthetic/dvgo_{s}/render_liif'
+    for s in ['Bike', 'Lifestyle', 'Palace', 'Robot', 'Spaceship', 'Steamtrain', 'Toad', 'Wineholder']:
+        data_dir = f'data/Synthetic_NSVF/{s}'
+        eval_dir = f'logs/nsvf_synthetic/dvgo_{s}/render_liif'
         psnrs = []
         ssims = []
         lpips_vgg = []
+        rgb_paths = sorted(glob.glob(os.path.join(data_dir, 'rgb', '*png')))
         print(f'--------Testing Scene {s}--------')
-        for i in tqdm(range(200)):
-            gt_path = f'{data_dir}/r_{i}.png'
-            path = f'{eval_dir}/{i}.png'
+        
+        cnt = 0
+        for i, gt_path in tqdm(enumerate(rgb_paths)):
+            i_set = int(os.path.split(gt_path)[-1][0])
+            if i_set != 2:
+                continue
+            path = f'{eval_dir}/{cnt}.png'
 
             gt_img = read_image(gt_path)
             rgb = read_image(path)
@@ -40,6 +45,7 @@ if __name__ == '__main__':
             psnrs.append(p)
             ssims.append(utils.rgb_ssim(rgb, gt_img, max_val=1))
             lpips_vgg.append(utils.rgb_lpips(rgb, gt_img, net_name='vgg', device='cuda'))
+            cnt += 1
         
         print('Testing psnr', np.mean(psnrs), '(avg)')
         print('Testing ssim', np.mean(ssims), '(avg)')

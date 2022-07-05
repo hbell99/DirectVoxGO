@@ -120,14 +120,15 @@ class MultisceneNSVFDataset(Dataset):
                 assert H == 800 and W == 800
 
                 image = (np.array(image) / 255.).astype(np.float32)
-                if down > 1:
-                    image = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
-                
                 if image.shape[-1] == 4:
                     if white_bkgd:
                         image = image[...,:3]*image[...,-1:] + (1.-image[...,-1:])
                     else:
                         image = image[...,:3]*image[...,-1:]
+                assert image.shape[-1] == 3
+
+                if down > 1:
+                    image = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
                 
                 imgs.append(image)
                 poses.append(np.loadtxt(pose_path).astype(np.float32))

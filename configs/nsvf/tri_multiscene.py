@@ -1,19 +1,19 @@
 _base_ = '../tri_multiscene_default.py'
 
-expname = '1nl_conv_att'
-basedir = './logs/tri_dvgo_multiscene/Synthetic_NSVF/'
+expname = '1resconv_newrgb_bilinear_d_o_lego'
+basedir = './logs/tri_dvgo_multiscene_v1/Synthetic_NSVF/'
 
 data = dict(
-    down=4,
+    down=3.57,
     task='',
     datadir='./data/Synthetic_NSVF',
     dataset_type='nsvf',
     inverse_y=True,
     white_bkgd=True,
-    render_down=4,
+    render_down=3.57,
     batch_size=1, 
     dataset='MultisceneNSVFDataset',
-    test_scenes=['Wineholder', 'Lifestyle', 'Palace']
+    test_scenes=['Bike', 'Lifestyle', 'Palace', 'Robot', 'Spaceship', 'Steamtrain', 'Toad', 'Wineholder']
 )
 
 coarse_train = dict(
@@ -28,8 +28,8 @@ coarse_model_and_render = dict(
 )
 
 fine_train = dict(
-    N_iters=400000,
-    N_rand=2048,
+    N_iters=40000,
+    N_rand=4096,
     lrate_k0=0, 
     lrate_map=5e-4, #1e-4,
     lrate_encoder=1e-4,
@@ -43,24 +43,25 @@ fine_train = dict(
     lrate_map_zx=5e-4,
 
     lrate_nl_block=1e-4, 
+    lrate_rgbnet=1e-3, 
 
-    lrate_distillation_head=1e-4,
+    lrate_distillation_head=5e-4,
 
-    lrate_decay=800,
-    pg_scale=[16000, 32000, 48000, 64000],
-    fixed_lr_idx=[], #[34, 49, 63],
-    fixed_lr_idx_render = [34, 49, 63], 
+    lrate_decay=500,
+    pg_scale=[8000, 1600, 24000, 32000],
+    fixed_lr_idx=[34, 49, 63], #[34, 49, 63],
+    fixed_lr_idx_render=[34, 49, 63], # [61, 95, 46]
     ray_sampler='random',
 
     dynamic_downsampling=True,
-    dynamic_down=16,
-    skip_zero_grad_fields=[],
+    dynamic_down=4,
+    # skip_zero_grad_fields=[],
     weight_entropy_last=0.001,
-    weight_rgbper=0.01,
+    weight_rgbper=0, #0.01,
     
     weight_distillation=0,
-    weight_consistency=0, #0.01, #100, 
-    weight_cosine=0, #0.01,
+    weight_consistency=0, #100, 
+    weight_cosine=0,
 )
 
 fine_model_and_render = dict(
@@ -71,16 +72,16 @@ fine_model_and_render = dict(
     use_coarse_geo=True,
     rgbnet_dim=64,
     name='edsr-baseline', # 'resnet34', # 'resnet34', #
-    posbase_pe=10,
+    posbase_pe=4,
 
-    rgbnet_depth=5,
+    rgbnet_depth=3,
 
     global_cell_decode=False,
     no_voxel_feat=False,
     cat_posemb=True,
 
     interp_width=128,
-    interp_depth=5,
+    interp_depth=3,
 
     map_depth=5,
 
@@ -98,15 +99,18 @@ fine_model_and_render = dict(
     liif_state_dict='/data/hydeng/SR_NeRF/liif/checkpoints/edsr-baseline-liif.pth',
     load_liif_sd=False,
     # pretrained_state_dict='/home/hydeng/Documents/SR_NeRF/code/DirectVoxGO/pretrained/edsr-baseline.pth',
-    compute_consistency=True,
+    compute_consistency=False,
     
-    compute_cosine=True,
+    compute_cosine=False,
 
     n_mapping=1,
 
+    n_interp=3, 
+
     use_anchor_liif=False,
     use_siren=False,
-    use_nl=True,
+    use_nl=False,
+    use_liif_attn=False,
 
     stepsize=0.5,
 
