@@ -50,6 +50,18 @@ class NeRF_MLP(nn.Module):
 
         return rgb, density
 
+    def get_density(self, emb):
+        h = emb
+        for i, l in enumerate(self.pts_linears):
+            h = self.pts_linears[i](h)
+            h = F.relu(h)
+            if i in self.skips:
+                h = torch.cat([emb, h], -1)
+
+        density = self.density_linear(h)
+        return density
+
+
 
 class Mapping(nn.Module):
     def __init__(self, in_dim, out_dim=12, depth=1, width=64, dropout=0.1):
@@ -86,12 +98,12 @@ class Mapping(nn.Module):
 
 
 class Interp_MLP(nn.Module):
-    def __init__(self, in_dim, out_dim, width=128, depth=5, dropout=0.1):
+    def __init__(self, in_dim, out_dim, width=128, depth=4, dropout=0):
         super(Interp_MLP, self).__init__()
         self.model = nn.Sequential(
             *[nn.Linear(in_dim, width), nn.ReLU(inplace=True)],
             *[
-                nn.Sequential(nn.Linear(width, width), nn.Dropout(p=dropout), nn.ReLU(inplace=True))
+                nn.Sequential(nn.Linear(width, width), nn.ReLU(inplace=True))
                 for _ in range(depth-2)
             ],
             nn.Linear(width, out_dim),

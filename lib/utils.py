@@ -65,11 +65,15 @@ def load_model(model_class, ckpt_path):
     # ckpt['model_kwargs']['load_liif_sd'] = False
     # ckpt['model_kwargs']['pretrained_state_dict'] = None
     # ckpt['model_kwargs']['liif_state_dict'] = None
+    # ckpt['model_kwargs']['implicit_voxel_feat'] = True
     model = model_class(**ckpt['model_kwargs'])
     # print(model.state_dict().keys())
     print('density' in ckpt['model_state_dict'])
+    print('k0_xy' in ckpt['model_state_dict'])
     model.load_state_dict(ckpt['model_state_dict'])
     print('loaded checkpoints!!!')
+    if not 'density' in ckpt['model_state_dict']:
+        model.density = ckpt['density']
 
     # ckpt = torch.load(ckpt_path)
     # ckpt['model_kwargs']['use_anchor_liif'] = False
