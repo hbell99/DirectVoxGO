@@ -443,13 +443,13 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         }, last_ckpt_path)
         print(f'scene_rep_reconstruction ({stage}): saved checkpoints at', last_ckpt_path)
         
-        rgbnet_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'rgbnet_last.tar')
+        rgbnet_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_rgbnet_last.tar')
         torch.save({
             'rgbnet_state_dict': model.rgbnet.state_dict()
         }, rgbnet_ckpt_path)
         print(f'scene_rep_reconstruction ({stage}): saved checkpoints at', rgbnet_ckpt_path)
         
-        k0_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'k0_last.tar')
+        k0_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_k0_last.tar')
         torch.save({
             'k0_xy_state_dict': model.k0_xy,
             'k0_yz_state_dict': model.k0_yz,

@@ -121,20 +121,21 @@ class DirectVoxGO(torch.nn.Module):
                 self.k0_dim = 0
             else:
                 self.k0_dim = rgbnet_dim
-            self.k0_xy = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[0], self.world_size[1]]))
-            self.k0_yz = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[1], self.world_size[2]]))
-            self.k0_zx = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[2], self.world_size[0]]))
-            self.k0 = {
-                'xy': self.k0_xy,
-                'yz': self.k0_yz,
-                'zx': self.k0_zx,
-            }
             if k0_ckpt_path:
                 print('dvgo: k0, loading from', k0_ckpt_path)
                 ckpt = torch.load(k0_ckpt_path)
                 self.k0_xy = ckpt['k0_xy_state_dict']
                 self.k0_yz = ckpt['k0_yz_state_dict']
                 self.k0_zx = ckpt['k0_zx_state_dict']
+            else:
+                self.k0_xy = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[0], self.world_size[1]]))
+                self.k0_yz = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[1], self.world_size[2]]))
+                self.k0_zx = torch.nn.Parameter(torch.zeros([1, self.k0_dim, self.world_size[2], self.world_size[0]]))
+            self.k0 = {
+                'xy': self.k0_xy,
+                'yz': self.k0_yz,
+                'zx': self.k0_zx,
+            }
             # self.k0 = torch.nn.Parameter(torch.zeros([1, self.k0_dim, *self.world_size]))
             self.rgbnet_direct = rgbnet_direct
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
@@ -420,7 +421,7 @@ class DirectVoxGO(torch.nn.Module):
         ray_pts = ray_pts.reshape(-1, 3)
 
         inp_k0 = {}
-        if self.implicit_voxel_feat:
+        if self.implicit_voxel_feat and False:
             # k0s, volumes = self.grid_sampler(ray_pts, inp_k0, is_k0=True, stepsize=render_kwargs['stepsize'])
             rate = 1
             scale = torch.rand([1])[0] * (rate - 1) + 1
